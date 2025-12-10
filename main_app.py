@@ -13,15 +13,15 @@ menu = st.sidebar.selectbox(
 
 if menu == "1) 음성 → 텍스트":
     st.header("🎙 실시간 음성 → 텍스트 변환 (Web Speech API)")
-    st.write("버튼을 눌러 말하면 텍스트가 실시간으로 입력됩니다. **(자동 끊김 방지 로직 적용)**")
+    st.write("버튼을 눌러 말하면 텍스트가 실시간으로 입력됩니다. (중복 제거 및 자동 재시작 로직 적용)")
 
-    # --- JavaScript: Web Speech API (끊김 방지 로직 추가) ---
+    # --- JavaScript: Web Speech API (중복 제거 및 끊김 방지 로직) ---
     speech_to_text = """
     <script>
     let recognizing = false;
     let globalRecognition;
-    let finalTranscript = "";
-    let autoRestartAttempt = false; // 자동 재시작 플래그
+    let finalTranscript = ""; // 최종 확정된 내용을 누적하는 변수
+    let autoRestartAttempt = false; 
 
     function startRecognition() {
         window.SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -34,7 +34,7 @@ if menu == "1) 음성 → 텍스트":
 
             globalRecognition.onstart = () => {
                 recognizing = true;
-                autoRestartAttempt = false; // 시작할 때 초기화
+                autoRestartAttempt = false;
                 const btn = document.getElementById("recBtn");
                 btn.innerText = "🎙️ 듣는 중... (말하세요)";
                 btn.style.backgroundColor = "#ff5555";
@@ -43,8 +43,8 @@ if menu == "1) 음성 → 텍스트":
             globalRecognition.onerror = (event) => {
                 console.log("Error:", event);
                 
-                // 에러 발생 시 자동 재시작 로직 실행
-                if (event.error !== 'aborted') { // 사용자가 멈춘 것이 아닌 경우
+                // 에러 발생 시 자동 재시작 시도 (사용자가 명시적으로 멈춘 경우가 아니라면)
+                if (event.error !== 'aborted') {
                     if (!autoRestartAttempt) {
                         autoRestartAttempt = true;
                         setTimeout(() => {
@@ -57,20 +57,26 @@ if menu == "1) 음성 → 텍스트":
             };
 
             globalRecognition.onresult = (event) => {
-                let interim = "";
+                let interimTranscript = "";
+                let currentFinalTranscript = ""; // 이번 이벤트에서 확정된 내용
 
+                // 1. 잠정/최종 결과를 분리하여 계산
                 for (let i = event.resultIndex; i < event.results.length; ++i) {
                     if (event.results[i].isFinal) {
-                        finalTranscript += event.results[i][0].transcript;
+                        currentFinalTranscript += event.results[i][0].transcript;
                     } else {
-                        interim += event.results[i][0].transcript;
+                        interimTranscript += event.results[i][0].transcript;
                     }
                 }
 
+                // 2. 최종 확정된 내용을 누적 변수(finalTranscript)에 추가
+                finalTranscript += currentFinalTranscript;
+                
+                // 3. 텍스트 영역에 출력할 내용 (누적된 최종 내용 + 현재 잠정 내용)
                 const textArea = document.getElementById("speechText");
-                textArea.value = finalTranscript + " " + interim;
-
-                // Streamlit에 값 전달 (Streamlit 텍스트 영역에 결과가 표시되도록)
+                textArea.value = finalTranscript + " " + interimTranscript;
+                
+                // Streamlit에 값 전달
                 const inputEvent = new Event("input", { bubbles: true });
                 textArea.dispatchEvent(inputEvent);
                 
@@ -79,7 +85,7 @@ if menu == "1) 음성 → 텍스트":
             };
 
             globalRecognition.onend = () => {
-                // 사용자가 멈춘 상태가 아니라면 (recognizing이 true였는데 onend가 호출됐다면)
+                // 사용자가 멈춘 상태가 아니라면 (자동 끊김이라면)
                 if (recognizing) { 
                     // 인식을 멈추지 않고, 자동으로 재시작을 시도합니다.
                     if (!autoRestartAttempt) {
@@ -101,12 +107,15 @@ if menu == "1) 음성 → 텍스트":
         }
 
         if (!recognizing) {
-            // 새로 시작할 때는 기존 내용 유지
-            // finalTranscript = ""; 
+            // 새로 시작할 때는 finalTranscript을 비우고 시작
+            finalTranscript = ""; 
+            const textArea = document.getElementById("speechText");
+            textArea.value = ""; 
+            
             globalRecognition.start();
         } else {
             // 사용자가 명시적으로 멈출 때
-            recognizing = false; // onend에서 자동 재시작을 막기 위해 false로 설정
+            recognizing = false;
             globalRecognition.stop();
         }
     }
@@ -137,8 +146,7 @@ if menu == "1) 음성 → 텍스트":
 
 elif menu == "2) 차트 자동 정리":
     st.header("📝 차트 자동 정리")
-    st.info("이 기능은 **GPT-3.5 Turbo (유료)** 또는 **무료 오픈소스 LLM**을 사용해야 효율적입니다.")
-    st.write("무료로 사용하시려면, 나중에 다른 **무료 AI API (예: 허깅페이스 모델)**를 연동하거나, 직접 정리하는 로직을 Python으로 짜야 합니다.")
+    st.info("이 기능은 LLM(대규모 언어 모델)을 사용해야 효율적이며, 현재 무료 AI API 연동이 필요합니다.")
     
     text = st.text_area("대화 원문 입력")
     
@@ -148,7 +156,7 @@ elif menu == "2) 차트 자동 정리":
 
 elif menu == "3) 치료법 검색":
     st.header("📚 치료법 검색")
-    st.write("준비하신 치료법 DB(SQLite, CSV 등)에서 증상을 검색합니다. 이 기능은 순수 Python으로 구현 가능합니다.")
+    st.write("준비하신 치료법 DB(SQLite, CSV 등)에서 증상을 검색합니다. 이 기능은 순수 Python으로 구현 가능하며 무료입니다.")
     keyword = st.text_input("증상/키워드 입력")
 
     if st.button("검색"):
