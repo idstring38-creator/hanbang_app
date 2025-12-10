@@ -1,6 +1,25 @@
 import streamlit as st
 from google import genai 
-import re # 정규 표현식 라이브러리 (혈자리 이미지 URL 추출에 사용)
+import re 
+import datetime 
+
+# --- Session State 초기화 및 시간 기록 ---
+
+# 다음 환자 진료 시작 시, 입력 필드를 초기화하고 시간 및 환자 카운트를 업데이트
+def clear_form():
+    # Streamlit은 키(key)가 있는 위젯의 값을 st.session_state에 저장합니다.
+    st.session_state.raw_text = "" 
+    st.session_state.current_time = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    st.session_state.patient_count += 1
+    # 다른 입력 필드도 초기화하고 싶다면 여기에 추가합니다.
+    st.session_state.treatment_db_content = ""
+
+
+if 'current_time' not in st.session_state:
+    st.session_state.current_time = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    st.session_state.patient_count = 1
+    st.session_state.treatment_db_content = ""
+
 
 # --- Configuration and Initialization ---
 st.set_page_config(page_title="한의사 임상 보조 시스템 (통합)", layout="wide")
@@ -11,7 +30,6 @@ st.caption("환자 대화 입력 한 번으로 SOAP 차트 정리와 최적 치�
 # API Initialization (Attempt to load client)
 client = None
 try:
-    # Streamlit Secrets에서 API 키 로드
     api_key = st.secrets["GEMINI_API_KEY"]
     client = genai.Client(api_key=api_key)
 except KeyError:
@@ -19,20 +37,26 @@ except KeyError:
 except Exception as e:
     st.error(f"Gemini 클라이언트 초기화 중 오류가 발생했습니다: {e}")
 
+# -----------------------------------------------------------
 # --- 1. 환자 대화 원문 입력 (Step 1 Input) ---
+# -----------------------------------------------------------
 
-st.header("1. 📝 환자 대화 원문 입력")
-raw_text = st.text_area("환자 대화 원문 입력 (클로바/갤럭시 복사)", height=200, 
+st.header(f"1. 📝 환자 대화 원문 입력 (환자 #{st.session_state.patient_count})")
+raw_text = st.text_area("환자 대화 원문 입력 (클로바/갤럭시 복사)", key='raw_text', height=200, 
                         placeholder="여기에 네이버 클로바 노트나 갤럭시 메모장에서 복사한 대화 텍스트를 붙여넣으세요.")
 
+# -----------------------------------------------------------
 # --- 2. 한의원 치료법 DB 내용 입력 (Step 2 Input) ---
+# -----------------------------------------------------------
 
 st.header("2. 📚 한의원 치료법 DB 내용 입력")
 st.warning("⚠️ **이미지 시각화를 위해:** 혈자리 정보를 입력할 때 **'혈자리 이름 [이미지: 이미지URL]'** 형식으로 URL을 포함해야 합니다.")
-treatment_db_content = st.text_area("치료법 DB 내용 입력", height=300, 
-                                    placeholder="가지고 계신 선생님만의 치료법 DB 내용을 모두 복사하여 여기에 붙여넣으세요. (예: 요통: 침치료, 핵심혈: L4(https://.../L4.jpg), 방제: 독활기생탕 [이미지: https://.../img.jpg])")
+treatment_db_content = st.text_area("치료법 DB 내용 입력", key='treatment_db_content', height=300, 
+                                    placeholder="가지고 계신 선생님만의 치료법 DB 내용을 모두 복사하여 여기에 붙여넣으세요.")
 
+# -----------------------------------------------------------
 # --- 3. 전체 처리 버튼 ---
+# -----------------------------------------------------------
 
 if st.button("✨ 전체 과정 시작 (SOAP 정리 & 치료법 제안)", use_container_width=True):
     if not raw_text or not treatment_db_content:
@@ -65,6 +89,7 @@ if st.button("✨ 전체 과정 시작 (SOAP 정리 & 치료법 제안)", use_co
         """
         
         soap_result_text = None
+        부위_형태_키 = "결과_없음" 
         
         with st.spinner("1단계: SOAP 차트 정리 중..."):
             try:
@@ -78,6 +103,46 @@ if st.button("✨ 전체 과정 시작 (SOAP 정리 & 치료법 제안)", use_co
                 soap_result_text = soap_response.text
                 st.code(soap_result_text, language="text")
                 st.success("1단계: SOAP 차트 정리 완료. (자동으로 2단계로 넘어갑니다.)")
+
+                # ----------------------------------------------------
+                # **[다운로드 기능] 파일명 생성: '아픈 부위_아픈 형태.txt' 형식 적용**
+                # ----------------------------------------------------
+                
+                # 'A' 또는 'CC' 섹션의 첫 줄 내용을 활용하여 파일명 키워드 추출
+                match = re.search(r'^(A|CC):\s*([\s\S]+?)\n', soap_result_text, re.MULTILINE)
+                
+                if match:
+                    key_content = match.group(2).strip().split('\n')[0].strip()
+                    clean_content = re.sub(r'(진단|추정|변증|의심|상태|관련|입니다|보임)', '', key_content).strip()
+                    words = clean_content.split()
+                    
+                    부위 = "부위"
+                    형태 = "증상"
+                    
+                    if len(words) >= 2:
+                        부위 = words[0][:5] 
+                        형태 = words[1][:5] 
+                    elif len(words) == 1:
+                        부위 = words[0][:5]
+                        형태 = "증상"
+                        
+                    부위_형태_키 = f"{부위}_{형태}"
+                    # 파일명에 쓸 수 없거나 불필요한 문자 제거
+                    부위_형태_키 = re.sub(r'[^\w-]', '', 부위_형태_키.replace(' ', '_')) 
+
+                # 최종 파일명 생성
+                soap_filename_base = 부위_형태_키
+                soap_filename = f"SOAP_{soap_filename_base}_{st.session_state.current_time}.txt"
+                
+                # 다운로드 버튼 생성
+                st.download_button(
+                    label="⬇️ SOAP 차트 다운로드 (텍스트 파일)",
+                    data=soap_result_text,
+                    file_name=soap_filename,
+                    mime="text/plain",
+                    help=f"파일명 형식: SOAP_{soap_filename_base}.txt",
+                    use_container_width=True
+                )
 
             except Exception as e:
                 st.error(f"1단계(SOAP 정리) 중 오류가 발생했습니다: {e}")
@@ -133,25 +198,44 @@ if st.button("✨ 전체 과정 시작 (SOAP 정리 & 치료법 제안)", use_co
                     st.subheader("📋 추천 치료 계획 상세")
                     st.markdown(treatment_text)
                     
+                    # ----------------------------------------------------
+                    # **최종 진료 보고서 다운로드 기능**
+                    # ----------------------------------------------------
+                    
+                    full_report = f"--- 진료 보고서 ({부위_형태_키}) ---\n\n[환자 대화 원문]\n{raw_text}\n\n[SOAP 차트 결과]\n{soap_result_text}\n\n[최적 치료 계획 제안]\n{treatment_text}"
+                    
+                    full_filename_base = f"Report_{부위_형태_키}"
+                    full_filename = f"{full_filename_base}_{st.session_state.current_time}.md"
+                    
+                    st.download_button(
+                        label="⬇️ 최종 진료 보고서 다운로드 (Markdown)",
+                        data=full_report,
+                        file_name=full_filename,
+                        mime="text/markdown",
+                        help=f"SOAP, 원문, 치료법 제안이 모두 포함된 최종 보고서를 저장합니다. 파일명 형식: {full_filename_base}.md",
+                        use_container_width=True
+                    )
+                    
+                    # ----------------------------------------------------
+                    # **혈자리 시각화**
+                    # ----------------------------------------------------
+                    
                     st.subheader("🖼️ 추천 혈자리 시각화")
                     
-                    # LLM의 출력 텍스트에서 '혈자리 이름 [이미지: URL]' 패턴을 찾습니다.
-                    # URL 추출 패턴: [이미지: URL] 형태의 URL을 찾음
-                    
-                    # re.findall(패턴, 검색 텍스트, 플래그)
-                    # 패턴 설명: ( ) 캡처 그룹, \w+ 한글/영문/숫자, https?:// http 또는 https, [^\s\]]+ 공백이나 ]가 아닌 모든 문자
+                    # LLM 출력 텍스트에서 '혈자리 이름 [이미지: URL]' 패턴 추출
+                    # 패턴: (\S+)\s*\[이미지:\s*(https?:\/\/[^\s\]]+)\]
                     image_patterns = re.findall(r'(\S+)\s*\[이미지:\s*(https?:\/\/[^\s\]]+)\]', treatment_text, re.IGNORECASE)
                     
                     if not image_patterns:
-                        st.info("추천된 치료 계획 텍스트에서 혈자리 이미지 URL을 찾을 수 없습니다. DB 내용과 LLM 출력 형식이 '혈자리 이름 [이미지: URL]'과 일치하는지 확인해주세요.")
+                        st.info("추천된 치료 계획 텍스트에서 혈자리 이미지 URL을 찾을 수 없습니다. DB 입력 형식을 확인해주세요.")
                     else:
                         st.write(f"총 {len(image_patterns)}개의 혈자리 이미지를 찾았습니다.")
                         
-                        # 이미지를 가로로 나열하기 위해 st.columns 사용
-                        cols = st.columns(min(len(image_patterns), 3)) # 최대 3개 컬럼
+                        cols = st.columns(min(len(image_patterns), 3)) 
                         
                         for i, (point_name, url) in enumerate(image_patterns):
                             try:
+                                # 혈자리 그림 시각화
                                 cols[i % len(cols)].image(url.strip(), caption=point_name, width=200)
                             except Exception as img_e:
                                 cols[i % len(cols)].error(f"이미지 로드 오류 ({point_name}): {img_e}")
@@ -159,9 +243,9 @@ if st.button("✨ 전체 과정 시작 (SOAP 정리 & 치료법 제안)", use_co
                 except Exception as e:
                     st.error(f"2단계(치료법 제안) 중 오류가 발생했습니다: {e}")
 
-# --- 안내 메시지 ---
-st.sidebar.markdown("---")
-st.sidebar.markdown("### 🛠️ 개발 가이드:")
-st.sidebar.markdown("1. **Seamless Flow:** 입력(1, 2) 후 버튼 클릭 한 번으로 (3, 4)의 모든 과정이 순차적으로 실행됩니다.")
-st.sidebar.markdown("2. **자동 입력:** 3단계의 SOAP 결과가 4단계의 치료법 제안에 자동으로 사용됩니다.")
-st.sidebar.markdown("3. **이미지 형식:** 혈자리 이미지를 띄우려면, '한의원 치료법 DB 내용'에 `혈자리 이름 [이미지: URL]` 형식으로 자료를 입력해야 합니다.")
+# -----------------------------------------------------------
+# --- 5. 다음 환자 진료 시작 버튼 ---
+# -----------------------------------------------------------
+st.markdown("---")
+st.header("5. 다음 환자 진료 시작")
+st.button("🏥 다음 환자 진료 시작 (입력 필드 초기화)", on_click=clear_form, use_container_width=True)
