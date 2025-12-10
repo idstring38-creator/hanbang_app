@@ -7,18 +7,16 @@ import datetime
 
 # 다음 환자 진료 시작 시, 입력 필드를 초기화하고 시간 및 환자 카운트를 업데이트
 def clear_form():
-    # Streamlit은 키(key)가 있는 위젯의 값을 st.session_state에 저장합니다.
+    # raw_text 키 초기화 (대화 원문 입력 필드)
     st.session_state.raw_text = "" 
+    # 현재 시간 및 환자 카운트 업데이트
     st.session_state.current_time = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     st.session_state.patient_count += 1
-    # 다른 입력 필드도 초기화하고 싶다면 여기에 추가합니다.
-    st.session_state.treatment_db_content = ""
 
 
 if 'current_time' not in st.session_state:
     st.session_state.current_time = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     st.session_state.patient_count = 1
-    st.session_state.treatment_db_content = ""
 
 
 # --- Configuration and Initialization ---
@@ -46,21 +44,38 @@ raw_text = st.text_area("환자 대화 원문 입력 (클로바/갤럭시 복사
                         placeholder="여기에 네이버 클로바 노트나 갤럭시 메모장에서 복사한 대화 텍스트를 붙여넣으세요.")
 
 # -----------------------------------------------------------
-# --- 2. 한의원 치료법 DB 내용 입력 (Step 2 Input) ---
+# --- 2. 한의원 치료법 DB 내용 로드 (Secret에서 불러옴) ---
 # -----------------------------------------------------------
 
-st.header("2. 📚 한의원 치료법 DB 내용 입력")
-st.warning("⚠️ **이미지 시각화를 위해:** 혈자리 정보를 입력할 때 **'혈자리 이름 [이미지: 이미지URL]'** 형식으로 URL을 포함해야 합니다.")
-treatment_db_content = st.text_area("치료법 DB 내용 입력", key='treatment_db_content', height=300, 
-                                    placeholder="가지고 계신 선생님만의 치료법 DB 내용을 모두 복사하여 여기에 붙여넣으세요.")
+st.header("2. 📚 한의원 치료법 DB 내용 로드")
+st.warning("⚠️ **DB 내용은 Streamlit Secrets에 'TREATMENT_DB' 키로 저장되어 있습니다.**")
+
+treatment_db_content = None
+
+try:
+    # st.secrets에서 DB 내용을 불러옴
+    treatment_db_content = st.secrets["TREATMENT_DB"]
+    
+    # DB 내용을 확인용으로 펼쳐보기 기능 추가 (수정/입력은 불가)
+    with st.expander("현재 로드된 치료법 DB 내용 보기 (수정 불가)"):
+        st.caption("이 내용은 Streamlit Secrets에서 로드되었으며, 수정은 Streamlit Cloud Secrets에서 해야 합니다. 혈자리 이미지 URL 포함 형식: [이미지: URL]")
+        # 내용이 길 경우 일부만 보여줍니다.
+        st.text(treatment_db_content[:500] + "..." if len(treatment_db_content) > 500 else treatment_db_content)
+        
+except KeyError:
+    st.error("⚠️ 치료법 DB 내용 (TREATMENT_DB)을 Streamlit Secrets에서 찾을 수 없습니다. Secrets 설정을 확인해주세요.")
+    # 로드 실패 시 버튼을 누르지 못하도록 처리
+    treatment_db_content = None 
 
 # -----------------------------------------------------------
 # --- 3. 전체 처리 버튼 ---
 # -----------------------------------------------------------
 
 if st.button("✨ 전체 과정 시작 (SOAP 정리 & 치료법 제안)", use_container_width=True):
-    if not raw_text or not treatment_db_content:
-        st.warning("환자 대화 원문과 치료법 DB 내용을 모두 입력해주세요.")
+    if not raw_text:
+        st.warning("환자 대화 원문을 입력해주세요.")
+    elif not treatment_db_content:
+        st.error("치료법 DB 내용이 Secrets에서 로드되지 않아 작업을 시작할 수 없습니다.")
     elif not client:
         st.error("Gemini 클라이언트 초기화 오류로 인해 작업을 시작할 수 없습니다. API 키를 확인하세요.")
     else:
@@ -223,7 +238,6 @@ if st.button("✨ 전체 과정 시작 (SOAP 정리 & 치료법 제안)", use_co
                     st.subheader("🖼️ 추천 혈자리 시각화")
                     
                     # LLM 출력 텍스트에서 '혈자리 이름 [이미지: URL]' 패턴 추출
-                    # 패턴: (\S+)\s*\[이미지:\s*(https?:\/\/[^\s\]]+)\]
                     image_patterns = re.findall(r'(\S+)\s*\[이미지:\s*(https?:\/\/[^\s\]]+)\]', treatment_text, re.IGNORECASE)
                     
                     if not image_patterns:
