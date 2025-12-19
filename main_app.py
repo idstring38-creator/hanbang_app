@@ -3,6 +3,7 @@ from google import genai
 import re
 import datetime
 import time
+from groq import Groq # Groq 라이브러리 추가
 
 # --- 1. 페이지 설정 및 초기화 ---
 st.set_page_config(
@@ -23,7 +24,7 @@ def clear_form():
     st.session_state.current_time = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     st.session_state.patient_count += 1
 
-# --- 2. 커스텀 CSS (모바일 가독성 최적화) ---
+# --- 2. 커스텀 CSS ---
 st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;700&display=swap');
@@ -76,16 +77,28 @@ st.markdown("""
         border-radius: 4px;
         color: #475569;
     }
+    .groq-tag {
+        background-color: #ffedd5;
+        color: #9a3412;
+    }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 3. API 및 데이터 로드 ---
-client = None
+# --- 3. API 클라이언트 초기화 ---
+# Gemini 설정
+gemini_client = None
 try:
-    api_key = st.secrets["GEMINI_API_KEY"]
-    client = genai.Client(api_key=api_key)
-except Exception as e:
-    st.error("⚠️ API 키 설정을 확인해주세요 (GEMINI_API_KEY).")
+    gemini_client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
+except:
+    st.error("⚠️ Gemini API 키를 확인해주세요.")
+
+# Groq 설정 (새로 추가)
+groq_client = None
+try:
+    groq_client = Groq(api_key=st.secrets["GROQ_API_KEY"])
+except:
+    # Groq 키가 없어도 일단 실행은 되게 함
+    pass
 
 try:
     treatment_db_content = st.secrets["TREATMENT_DB"]
@@ -93,51 +106,47 @@ except:
     st.error("⚠️ TREATMENT_DB 설정이 필요합니다.")
     st.stop()
 
-# --- 4. 멀티 모델 스마트 폴백 로직 ---
-def analyze_with_multi_model_fallback(prompt):
+# --- 4. 하이브리드 폴백 로직 (Gemini + Groq) ---
+def analyze_with_hybrid_fallback(prompt):
     """
-    1.5 Flash -> 1.5 Flash-8B -> 1.5 Pro 순서로 시도하여 할당량 문제를 우회합니다.
+    1. Gemini Flash 계열 시도
+    2. 실패 시 Groq (Llama 3.3 70B) 시도
     """
-    models_to_try = [
-        'gemini-1.5-flash',
-        'gemini-1.5-flash-8b',
-        'gemini-1.5-pro',
-        'gemini-2.0-flash-exp'
-    ]
+    # 1단계: Gemini 시도
+    gemini_models = ['models/gemini-1.5-flash', 'models/gemini-1.5-flash-8b']
     
-    last_error = None
-    
-    for model_name in models_to_try:
+    for model in gemini_models:
         try:
-            response = client.models.generate_content(
-                model=model_name,
-                contents=prompt,
-            )
-            return response.text, model_name
+            response = gemini_client.models.generate_content(model=model, contents=prompt)
+            return response.text, model.replace('models/', '')
         except Exception as e:
-            last_error = e
-            if "404" in str(e) and not model_name.startswith("models/"):
-                try:
-                    retry_model_name = f"models/{model_name}"
-                    response = client.models.generate_content(
-                        model=retry_model_name,
-                        contents=prompt,
-                    )
-                    return response.text, retry_model_name
-                except:
-                    continue
+            if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+                continue # 다음 Gemini 모델로
+            break # 다른 에러면 Gemini 포기하고 Groq으로
             
-            if "429" in str(e):
-                continue
-            else:
-                continue
+    # 2단계: Gemini가 다 막혔다면 Groq 등판
+    if groq_client:
+        try:
+            # Groq의 최신 강력한 모델인 llama-3.3-70b 사용
+            chat_completion = groq_client.chat.completions.create(
+                messages=[{"role": "user", "content": prompt}],
+                model="llama-3.3-70b-versatile",
+            )
+            return chat_completion.choices[0].message.content, "Groq (Llama 3.3)"
+        except Exception as e:
+            raise Exception(f"모든 AI 서비스가 응답하지 않습니다. 잠시 후 시도하세요. (Error: {e})")
     
-    raise last_error
+    raise Exception("Gemini 할당량이 초과되었으며, Groq API 키가 설정되지 않았습니다.")
 
 # --- 5. 사이드바 및 레이아웃 ---
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/3774/3774299.png", width=60)
     st.title(f"환자 #{st.session_state.patient_count}")
+    if groq_client:
+        st.success("✅ Groq 보조 엔진 가동 중")
+    else:
+        st.warning("ℹ️ Groq 키 미설정 (Gemini만 사용)")
+        
     if st.button("🔄 새 환자 진료 시작"):
         clear_form()
         st.rerun()
@@ -159,65 +168,63 @@ with col_in:
 
 # --- 6. 로직 실행 ---
 if analyze_btn and raw_text:
-    if not client:
-        st.error("AI 클라이언트가 준비되지 않았습니다.")
-    else:
-        try:
-            # 1단계: SOAP 생성
-            with st.spinner("AI가 차트를 분석 중입니다..."):
-                SOAP_PROMPT = f"한의사 보조 AI로서 아래 대화 원문을 SOAP 형식으로 요약하세요.\n[대화]: {raw_text}"
-                soap_text, soap_model = analyze_with_multi_model_fallback(SOAP_PROMPT)
+    try:
+        # 1단계: SOAP 생성
+        with st.spinner("AI가 차트를 분석 중입니다..."):
+            SOAP_PROMPT = f"한의사 보조 AI로서 아래 대화 원문을 SOAP 형식으로 요약하세요.\n[대화]: {raw_text}"
+            soap_text, soap_model = analyze_with_hybrid_fallback(SOAP_PROMPT)
+            
+            match = re.search(r'^(A|CC):\s*(.*)', soap_text, re.M)
+            filename_key = match.group(2).strip()[:10] if match else "진료기록"
+            filename_key = re.sub(r'[^\w\s-]', '', filename_key).replace(' ', '_')
+            
+            with col_out:
+                st.markdown("#### 🎯 분석 결과")
+                st.markdown('<div class="stCard">', unsafe_allow_html=True)
+                tag_class = "model-tag groq-tag" if "Groq" in soap_model else "model-tag"
+                st.markdown(f"##### 📋 SOAP 차트 요약 <span class='{tag_class}'>{soap_model}</span>", unsafe_allow_html=True)
+                st.markdown(f'<div class="soap-box">{soap_text}</div>', unsafe_allow_html=True)
                 
-                match = re.search(r'^(A|CC):\s*(.*)', soap_text, re.M)
-                filename_key = match.group(2).strip()[:10] if match else "진료기록"
-                filename_key = re.sub(r'[^\w\s-]', '', filename_key).replace(' ', '_')
+                st.download_button(
+                    "⬇️ 차트 다운로드",
+                    data=soap_text,
+                    file_name=f"SOAP_{filename_key}_{st.session_state.current_time}.txt",
+                    use_container_width=True
+                )
+                st.markdown('</div>', unsafe_allow_html=True)
+
+        # 2단계: 상세 치료법 제안
+        with st.spinner("최적의 혈자리와 처방을 찾는 중..."):
+            TREAT_PROMPT = f"""
+            아래 SOAP 차트와 치료 DB를 바탕으로 상세 Plan을 작성하세요.
+            혈자리는 '이름(코드) [이미지: URL]' 형식을 반드시 지키세요.
+            [SOAP]: {soap_text}
+            [DB]: {treatment_db_content}
+            """
+            treat_text, treat_model = analyze_with_hybrid_fallback(TREAT_PROMPT)
+
+            with col_out:
+                st.markdown('<div class="stCard">', unsafe_allow_html=True)
+                tag_class = "model-tag groq-tag" if "Groq" in treat_model else "model-tag"
+                st.markdown(f"##### 💡 추천 치료 상세 <span class='{tag_class}'>{treat_model}</span>", unsafe_allow_html=True)
+                st.markdown(treat_text)
                 
-                with col_out:
-                    st.markdown("#### 🎯 분석 결과")
-                    st.markdown('<div class="stCard">', unsafe_allow_html=True)
-                    st.markdown(f"##### 📋 SOAP 차트 요약 <span class='model-tag'>{soap_model}</span>", unsafe_allow_html=True)
-                    st.markdown(f'<div class="soap-box">{soap_text}</div>', unsafe_allow_html=True)
-                    
-                    st.download_button(
-                        "⬇️ 차트 다운로드",
-                        data=soap_text,
-                        file_name=f"SOAP_{filename_key}_{st.session_state.current_time}.txt",
-                        use_container_width=True
-                    )
-                    st.markdown('</div>', unsafe_allow_html=True)
+                img_patterns = re.findall(r'(\S+)\s*\[이미지:\s*(https?:\/\/[^\s\]]+)\]', treat_text, re.I)
+                if img_patterns:
+                    st.markdown("---")
+                    st.markdown("##### 🖼️ 혈자리 가이드")
+                    img_cols = st.columns(2)
+                    for idx, (name, url) in enumerate(img_patterns):
+                        with img_cols[idx % 2]:
+                            st.image(url.strip(), caption=name, use_container_width=True)
+                st.markdown('</div>', unsafe_allow_html=True)
 
-            # 2단계: 상세 치료법 제안
-            with st.spinner("최적의 혈자리와 처방을 찾는 중..."):
-                TREAT_PROMPT = f"""
-                아래 SOAP 차트와 치료 DB를 바탕으로 상세 Plan을 작성하세요.
-                혈자리는 '이름(코드) [이미지: URL]' 형식을 반드시 지키세요.
-                [SOAP]: {soap_text}
-                [DB]: {treatment_db_content}
-                """
-                treat_text, treat_model = analyze_with_multi_model_fallback(TREAT_PROMPT)
-
-                with col_out:
-                    st.markdown('<div class="stCard">', unsafe_allow_html=True)
-                    st.markdown(f"##### 💡 추천 치료 상세 <span class='model-tag'>{treat_model}</span>", unsafe_allow_html=True)
-                    st.markdown(treat_text)
-                    
-                    img_patterns = re.findall(r'(\S+)\s*\[이미지:\s*(https?:\/\/[^\s\]]+)\]', treat_text, re.I)
-                    if img_patterns:
-                        st.markdown("---")
-                        st.markdown("##### 🖼️ 혈자리 가이드")
-                        img_cols = st.columns(2)
-                        for idx, (name, url) in enumerate(img_patterns):
-                            with img_cols[idx % 2]:
-                                st.image(url.strip(), caption=name, use_container_width=True)
-                    st.markdown('</div>', unsafe_allow_html=True)
-
-        except Exception as e:
-            st.error(f"분석 중 오류 발생: {e}")
+    except Exception as e:
+        st.error(f"❌ 분석 중 오류 발생: {e}")
 
 elif not analyze_btn:
     with col_out:
         st.info("환자 대화를 입력하면 AI가 SOAP 정리와 혈자리 제안을 시작합니다.")
-        # 에러 발생 지점 수정: 최신 Streamlit 라이브러리 규격에 맞춰 alpha 옵션 제거
         st.image("https://cdn-icons-png.flaticon.com/512/3865/3865922.png", width=120)
 
 st.divider()
