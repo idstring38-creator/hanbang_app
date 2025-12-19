@@ -3,14 +3,14 @@ from google import genai
 import re
 import datetime
 import time
-from groq import Groq # Groq 라이브러리 추가
+from groq import Groq
 
 # --- 1. 페이지 설정 및 초기화 ---
 st.set_page_config(
     page_title="한의사 임상 보조 시스템",
     page_icon="🩺",
-    layout="wide",
-    initial_sidebar_state="auto"
+    layout="centered",  # 중앙 집중형 레이아웃으로 변경 (모바일 가독성 향상)
+    initial_sidebar_state="collapsed"
 )
 
 # 세션 상태 초기화
@@ -24,80 +24,101 @@ def clear_form():
     st.session_state.current_time = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     st.session_state.patient_count += 1
 
-# --- 2. 커스텀 CSS ---
+# --- 2. 커스텀 CSS (모바일 UI 및 모델 태그 강화) ---
 st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;700&display=swap');
     
     html, body, [class*="css"] {
         font-family: 'Noto Sans KR', sans-serif;
+        background-color: #f8fafc;
     }
     
+    /* 카드형 컨테이너 */
     .stCard {
         background-color: #ffffff;
-        border-radius: 12px;
-        padding: 16px;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        border-radius: 16px;
+        padding: 20px;
+        box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);
         border: 1px solid #e2e8f0;
-        margin-bottom: 15px;
+        margin-bottom: 20px;
+        position: relative;
     }
     
-    h1 { font-size: 1.5rem !important; font-weight: 700 !important; }
-    h2 { font-size: 1.3rem !important; }
-    
-    p, span, div, label { 
-        font-size: 0.92rem !important; 
-        line-height: 1.6 !important; 
-        word-break: keep-all;
+    /* 제목 및 텍스트 스타일 */
+    .main-header {
+        text-align: center;
+        margin-bottom: 20px;
     }
-
+    
     .soap-box {
         background-color: #f1f5f9;
         border-left: 5px solid #3b82f6;
-        padding: 12px;
-        border-radius: 4px;
-        margin-bottom: 10px;
+        padding: 15px;
+        border-radius: 8px;
+        margin-bottom: 15px;
         white-space: pre-wrap;
+        font-size: 0.95rem;
+        line-height: 1.6;
     }
 
+    /* 모바일용 더 큰 분석 버튼 */
     .stButton>button {
         width: 100%;
-        border-radius: 10px;
-        height: 3.5em;
+        border-radius: 16px;
+        height: 4.5em; /* 버튼 크기 확대 */
         background-color: #2563eb;
         color: white !important;
-        font-weight: bold;
+        font-weight: 800;
+        font-size: 1.25rem !important; /* 폰트 크기 확대 */
         border: none;
+        box-shadow: 0 8px 15px rgba(37, 99, 235, 0.3);
+        transition: all 0.2s;
     }
     
-    .model-tag {
-        font-size: 0.7rem !important;
-        background-color: #e2e8f0;
-        padding: 2px 6px;
-        border-radius: 4px;
-        color: #475569;
+    .stButton>button:active {
+        transform: scale(0.98);
+        box-shadow: 0 4px 8px rgba(37, 99, 235, 0.2);
     }
+    
+    /* 모델 구분 태그 디자인 강화 */
+    .model-info-tag {
+        display: inline-block;
+        font-size: 0.75rem;
+        font-weight: 700;
+        padding: 4px 10px;
+        border-radius: 20px;
+        margin-bottom: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+    
+    .gemini-tag {
+        background-color: #dbeafe;
+        color: #1e40af;
+        border: 1px solid #bfdbfe;
+    }
+    
     .groq-tag {
-        background-color: #ffedd5;
-        color: #9a3412;
+        background-color: #fef3c7;
+        color: #92400e;
+        border: 1px solid #fde68a;
     }
     </style>
     """, unsafe_allow_html=True)
 
 # --- 3. API 클라이언트 초기화 ---
-# Gemini 설정
 gemini_client = None
 try:
     gemini_client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
 except:
     st.error("⚠️ Gemini API 키를 확인해주세요.")
 
-# Groq 설정 (새로 추가)
 groq_client = None
 try:
+    # Groq 클라이언트 초기화
     groq_client = Groq(api_key=st.secrets["GROQ_API_KEY"])
 except:
-    # Groq 키가 없어도 일단 실행은 되게 함
     pass
 
 try:
@@ -106,126 +127,119 @@ except:
     st.error("⚠️ TREATMENT_DB 설정이 필요합니다.")
     st.stop()
 
-# --- 4. 하이브리드 폴백 로직 (Gemini + Groq) ---
+# --- 4. 하이브리드 폴백 분석 로직 ---
 def analyze_with_hybrid_fallback(prompt):
-    """
-    1. Gemini Flash 계열 시도
-    2. 실패 시 Groq (Llama 3.3 70B) 시도
-    """
-    # 1단계: Gemini 시도
+    # 1단계: Gemini 시도 (1.5 Flash 버전 순차 시도)
     gemini_models = ['models/gemini-1.5-flash', 'models/gemini-1.5-flash-8b']
-    
     for model in gemini_models:
         try:
             response = gemini_client.models.generate_content(model=model, contents=prompt)
-            return response.text, model.replace('models/', '')
+            return response.text, model.replace('models/', 'Gemini ')
         except Exception as e:
             if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
-                continue # 다음 Gemini 모델로
-            break # 다른 에러면 Gemini 포기하고 Groq으로
+                continue
+            break
             
-    # 2단계: Gemini가 다 막혔다면 Groq 등판
+    # 2단계: Gemini 실패 시 Groq 시도 (최상위 모델 사용)
     if groq_client:
+        # Groq에서 지원하는 최상위 모델 리스트
+        # llama-3.3-70b-versatile가 현재 Groq에서 가장 강력한 범용 모델입니다.
         try:
-            # Groq의 최신 강력한 모델인 llama-3.3-70b 사용
             chat_completion = groq_client.chat.completions.create(
                 messages=[{"role": "user", "content": prompt}],
-                model="llama-3.3-70b-versatile",
+                model="llama-3.3-70b-versatile", # 70B 모델은 오픈소스 중 최고 수준입니다.
+                temperature=0.3, # 임상 분석을 위해 일관성 있는 답변 유도
             )
-            return chat_completion.choices[0].message.content, "Groq (Llama 3.3)"
+            return chat_completion.choices[0].message.content, "Groq (Llama-3.3-70B)"
         except Exception as e:
-            raise Exception(f"모든 AI 서비스가 응답하지 않습니다. 잠시 후 시도하세요. (Error: {e})")
+            raise Exception(f"모든 AI 서비스가 응답하지 않습니다. (Error: {e})")
     
-    raise Exception("Gemini 할당량이 초과되었으며, Groq API 키가 설정되지 않았습니다.")
+    raise Exception("API 할당량 초과 및 보조 엔진 미설정")
 
-# --- 5. 사이드바 및 레이아웃 ---
-with st.sidebar:
-    st.image("https://cdn-icons-png.flaticon.com/512/3774/3774299.png", width=60)
-    st.title(f"환자 #{st.session_state.patient_count}")
-    if groq_client:
-        st.success("✅ Groq 보조 엔진 가동 중")
-    else:
-        st.warning("ℹ️ Groq 키 미설정 (Gemini만 사용)")
-        
-    if st.button("🔄 새 환자 진료 시작"):
-        clear_form()
-        st.rerun()
+# --- 5. 메인 UI (세로형 배치) ---
+st.markdown('<div class="main-header">', unsafe_allow_html=True)
+st.title("🩺 한방 임상 보조 시스템")
+st.write(f"현재 환자: **#{st.session_state.patient_count}**")
+st.markdown('</div>', unsafe_allow_html=True)
 
-st.markdown("### 🩺 임상 보조 & SOAP 자동화")
-
-col_in, col_out = st.columns([1, 1.2])
-
-with col_in:
-    st.markdown("#### 📝 환자 대화 입력")
+# [1] 입력 섹션
+with st.container():
+    st.markdown('<div class="stCard">', unsafe_allow_html=True)
+    st.subheader("📝 대화 원문 입력")
     raw_text = st.text_area(
-        "대화 원문", 
+        "환자와의 대화 내용을 붙여넣으세요", 
         key='raw_text', 
-        height=250, 
-        placeholder="대화 내용을 붙여넣으세요...",
+        height=200, 
+        placeholder="어디가 어떻게 불편하신가요?...",
         label_visibility="collapsed"
     )
-    analyze_btn = st.button("✨ AI 분석 및 처방 제안")
+    # 분석 버튼 (CSS로 크기 조절됨)
+    analyze_btn = st.button("✨ AI 분석 및 처방 제안 시작")
+    st.markdown('</div>', unsafe_allow_html=True)
 
-# --- 6. 로직 실행 ---
+# [2] 결과 출력 섹션 (분석 시 하단에 순차적 생성)
 if analyze_btn and raw_text:
     try:
-        # 1단계: SOAP 생성
-        with st.spinner("AI가 차트를 분석 중입니다..."):
+        # 1단계: SOAP 요약
+        with st.spinner("SOAP 차트를 작성 중입니다..."):
             SOAP_PROMPT = f"한의사 보조 AI로서 아래 대화 원문을 SOAP 형식으로 요약하세요.\n[대화]: {raw_text}"
             soap_text, soap_model = analyze_with_hybrid_fallback(SOAP_PROMPT)
             
-            match = re.search(r'^(A|CC):\s*(.*)', soap_text, re.M)
-            filename_key = match.group(2).strip()[:10] if match else "진료기록"
-            filename_key = re.sub(r'[^\w\s-]', '', filename_key).replace(' ', '_')
+            st.markdown('<div class="stCard">', unsafe_allow_html=True)
+            # 모델 정보 표시
+            tag_type = "groq-tag" if "Groq" in soap_model else "gemini-tag"
+            st.markdown(f"<div class='model-info-tag {tag_type}'>🤖 엔진: {soap_model}</div>", unsafe_allow_html=True)
             
-            with col_out:
-                st.markdown("#### 🎯 분석 결과")
-                st.markdown('<div class="stCard">', unsafe_allow_html=True)
-                tag_class = "model-tag groq-tag" if "Groq" in soap_model else "model-tag"
-                st.markdown(f"##### 📋 SOAP 차트 요약 <span class='{tag_class}'>{soap_model}</span>", unsafe_allow_html=True)
-                st.markdown(f'<div class="soap-box">{soap_text}</div>', unsafe_allow_html=True)
-                
-                st.download_button(
-                    "⬇️ 차트 다운로드",
-                    data=soap_text,
-                    file_name=f"SOAP_{filename_key}_{st.session_state.current_time}.txt",
-                    use_container_width=True
-                )
-                st.markdown('</div>', unsafe_allow_html=True)
+            st.subheader("📋 SOAP 차트 요약")
+            st.markdown(f'<div class="soap-box">{soap_text}</div>', unsafe_allow_html=True)
+            
+            st.download_button(
+                "⬇️ SOAP 저장",
+                data=soap_text,
+                file_name=f"SOAP_{st.session_state.current_time}.txt",
+                use_container_width=True
+            )
+            st.markdown('</div>', unsafe_allow_html=True)
 
-        # 2단계: 상세 치료법 제안
-        with st.spinner("최적의 혈자리와 처방을 찾는 중..."):
+        # 2단계: 치료 상세
+        with st.spinner("치료 계획을 세우는 중..."):
             TREAT_PROMPT = f"""
             아래 SOAP 차트와 치료 DB를 바탕으로 상세 Plan을 작성하세요.
-            혈자리는 '이름(코드) [이미지: URL]' 형식을 반드시 지키세요.
+            혈자리는 '이름(코드) [이미지: URL]' 형식을 지키세요.
             [SOAP]: {soap_text}
             [DB]: {treatment_db_content}
             """
             treat_text, treat_model = analyze_with_hybrid_fallback(TREAT_PROMPT)
 
-            with col_out:
-                st.markdown('<div class="stCard">', unsafe_allow_html=True)
-                tag_class = "model-tag groq-tag" if "Groq" in treat_model else "model-tag"
-                st.markdown(f"##### 💡 추천 치료 상세 <span class='{tag_class}'>{treat_model}</span>", unsafe_allow_html=True)
-                st.markdown(treat_text)
-                
-                img_patterns = re.findall(r'(\S+)\s*\[이미지:\s*(https?:\/\/[^\s\]]+)\]', treat_text, re.I)
-                if img_patterns:
-                    st.markdown("---")
-                    st.markdown("##### 🖼️ 혈자리 가이드")
-                    img_cols = st.columns(2)
-                    for idx, (name, url) in enumerate(img_patterns):
-                        with img_cols[idx % 2]:
-                            st.image(url.strip(), caption=name, use_container_width=True)
-                st.markdown('</div>', unsafe_allow_html=True)
+            st.markdown('<div class="stCard">', unsafe_allow_html=True)
+            # 모델 정보 표시
+            tag_type = "groq-tag" if "Groq" in treat_model else "gemini-tag"
+            st.markdown(f"<div class='model-info-tag {tag_type}'>🤖 엔진: {treat_model}</div>", unsafe_allow_html=True)
+            
+            st.subheader("💡 추천 치료 및 처방")
+            st.markdown(treat_text)
+            
+            # 혈자리 이미지 자동 표시
+            img_patterns = re.findall(r'(\S+)\s*\[이미지:\s*(https?:\/\/[^\s\]]+)\]', treat_text, re.I)
+            if img_patterns:
+                st.divider()
+                st.markdown("##### 🖼️ 혈자리 위치 가이드")
+                for name, url in img_patterns:
+                    st.image(url.strip(), caption=name, use_container_width=True)
+            st.markdown('</div>', unsafe_allow_html=True)
 
     except Exception as e:
-        st.error(f"❌ 분석 중 오류 발생: {e}")
+        st.error(f"분석 중 오류가 발생했습니다: {e}")
 
-elif not analyze_btn:
-    with col_out:
-        st.info("환자 대화를 입력하면 AI가 SOAP 정리와 혈자리 제안을 시작합니다.")
-        st.image("https://cdn-icons-png.flaticon.com/512/3865/3865922.png", width=120)
+# 하단 도구함
+with st.sidebar:
+    st.title("진료 도구")
+    if st.button("🔄 다음 환자 (화면 비우기)"):
+        clear_form()
+        st.rerun()
+    st.divider()
+    if groq_client:
+        st.success("✅ Groq 보조 엔진 가동 중")
 
 st.divider()
-st.caption(f"© 2025 임상 보조 시스템 | 현재 시간: {st.session_state.current_time}")
+st.caption(f"© 2025 임상 보조 시스템 | 접속 시간: {st.session_state.current_time}")
