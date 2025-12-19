@@ -24,6 +24,10 @@ if 'soap_result' not in st.session_state:
     st.session_state.soap_result = ""
 if 'follow_up_questions' not in st.session_state:
     st.session_state.follow_up_questions = ""
+if 'raw_text' not in st.session_state:
+    st.session_state.raw_text = ""
+if 'additional_input' not in st.session_state:
+    st.session_state.additional_input = ""
 
 def clear_form():
     st.session_state.raw_text = ""
@@ -32,7 +36,7 @@ def clear_form():
     st.session_state.step = "input"
     st.session_state.soap_result = ""
     st.session_state.follow_up_questions = ""
-    st.session_state.additional_info = ""
+    st.session_state.additional_input = ""
 
 # --- 2. 커스텀 CSS ---
 st.markdown("""
@@ -66,7 +70,7 @@ st.markdown("""
         margin-bottom: 15px;
         white-space: pre-wrap;
         font-size: 0.95rem;
-        line-height: 1.5; /* 줄바꿈 간격 최적화 */
+        line-height: 1.5;
     }
 
     .stButton>button {
@@ -82,7 +86,7 @@ st.markdown("""
     }
     
     .verify-btn>button {
-        background-color: #059669 !important; /* 초록색 버튼으로 구분 */
+        background-color: #059669 !important;
         box-shadow: 0 8px 15px rgba(5, 150, 105, 0.3) !important;
     }
 
@@ -101,8 +105,8 @@ st.markdown("""
 gemini_client = None
 try:
     gemini_client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
-except:
-    st.error("⚠️ Gemini API 키를 확인해주세요.")
+except Exception as e:
+    st.error(f"⚠️ Gemini API 초기화 실패: {e}")
 
 groq_client = None
 try:
@@ -116,18 +120,20 @@ except:
     st.error("⚠️ TREATMENT_DB 설정이 필요합니다.")
     st.stop()
 
-# --- 4. 분석 엔진 ---
+# --- 4. 분석 엔진 (문법 수정 완료) ---
 def analyze_with_hybrid_fallback(prompt):
+    # 1단계: Gemini
     gemini_models = ['models/gemini-1.5-flash', 'models/gemini-1.5-flash-8b']
     for model in gemini_models:
         try:
             response = gemini_client.models.generate_content(model=model, contents=prompt)
-            return response.text
+            if response and response.text:
+                return response.text
         except Exception as e:
-            if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
-                continue
-            break
+            # 할당량 초과 등의 경우 다음 모델로 시도
+            continue
             
+    # 2단계: Groq (Gemini 실패 시)
     if groq_client:
         try:
             chat_completion = groq_client.chat.completions.create(
@@ -136,11 +142,14 @@ def analyze_with_hybrid_fallback(prompt):
                 temperature=0.3,
             )
             return chat_completion.choices[0].message.content
+        except Exception as e:
+            st.error(f"Groq 호출 실패: {e}")
     
-    raise Exception("API 연결 실패")
+    # 모든 시도가 실패한 경우
+    raise Exception("모든 AI 모델 호출에 실패했습니다. API 키나 연결 상태를 확인하세요.")
 
 def clean_newlines(text):
-    # 과도한 줄바꿈(3개 이상)을 2개로 줄임
+    if not text: return ""
     return re.sub(r'\n{3,}', '\n\n', text).strip()
 
 # --- 5. UI 및 로직 ---
@@ -163,34 +172,33 @@ if st.session_state.step == "input":
         if st.button("✨ 1차 분석 및 문진 확인"):
             if raw_text:
                 with st.spinner("증상을 분석 중입니다..."):
-                    # 1차 분석 프롬프트 (SOAP + 추가 확인 사항)
                     FIRST_PROMPT = f"""
                     한의사 보조 AI로서 다음 대화 원문을 분석하세요.
                     1. SOAP 형식으로 요약 (줄바꿈 최소화).
-                    2. 진단을 확정하기 위해 추가로 환자에게 물어봐야 할 질문이나 필요한 이학적 검사(SLR, ROM 등)가 있다면 [추가 확인 사항] 섹션에 리스트로 작성하세요. 없다면 '없음'이라고 적으세요.
+                    2. 진단을 확정하기 위해 추가로 환자에게 물어봐야 할 질문이나 필요한 이학적 검사가 있다면 [추가 확인 사항] 섹션에 리스트로 작성하세요. 없다면 '없음'이라고 적으세요.
                     
                     [대화]: {raw_text}
                     """
-                    result = analyze_with_hybrid_fallback(FIRST_PROMPT)
-                    
-                    # 결과 파싱
-                    if "[추가 확인 사항]" in result:
-                        parts = result.split("[추가 확인 사항]")
-                        st.session_state.soap_result = clean_newlines(parts[0])
-                        st.session_state.follow_up_questions = clean_newlines(parts[1])
-                    else:
-                        st.session_state.soap_result = clean_newlines(result)
-                        st.session_state.follow_up_questions = "없음"
-                    
-                    st.session_state.raw_text = raw_text
-                    
-                    # 추가 확인 사항이 '없음'이면 바로 결과 단계로, 있으면 검증 단계로
-                    if "없음" in st.session_state.follow_up_questions or len(st.session_state.follow_up_questions) < 5:
-                        st.session_state.step = "result"
+                    try:
+                        result = analyze_with_hybrid_fallback(FIRST_PROMPT)
+                        
+                        if "[추가 확인 사항]" in result:
+                            parts = result.split("[추가 확인 사항]")
+                            st.session_state.soap_result = clean_newlines(parts[0])
+                            st.session_state.follow_up_questions = clean_newlines(parts[1])
+                        else:
+                            st.session_state.soap_result = clean_newlines(result)
+                            st.session_state.follow_up_questions = "없음"
+                        
+                        st.session_state.raw_text = raw_text
+                        
+                        if "없음" in st.session_state.follow_up_questions or len(st.session_state.follow_up_questions) < 5:
+                            st.session_state.step = "result"
+                        else:
+                            st.session_state.step = "verify"
                         st.rerun()
-                    else:
-                        st.session_state.step = "verify"
-                        st.rerun()
+                    except Exception as e:
+                        st.error(f"분석 중 오류 발생: {e}")
             else:
                 st.warning("내용을 입력해주세요.")
         st.markdown('</div>', unsafe_allow_html=True)
@@ -206,7 +214,7 @@ elif st.session_state.step == "verify":
     st.markdown(st.session_state.follow_up_questions)
     st.markdown('</div>', unsafe_allow_html=True)
     
-    additional_info = st.text_area("추가 확인 내용 또는 검사 결과 입력", key="additional_info", placeholder="예: SLR 30도에서 양성, 야간통은 없음...")
+    additional_info = st.text_area("추가 확인 내용 또는 검사 결과 입력", key="additional_info_input", placeholder="예: SLR 30도에서 양성, 야간통은 없음...")
     
     st.markdown('<div class="verify-btn">', unsafe_allow_html=True)
     if st.button("✅ 최종 확인 및 처방 생성"):
@@ -223,7 +231,7 @@ elif st.session_state.step == "result":
         
         [치료 DB]: {treatment_db_content}
         [1차 분석]: {st.session_state.soap_result}
-        [추가 정보]: {getattr(st.session_state, 'additional_input', '없음')}
+        [추가 정보]: {st.session_state.additional_input if st.session_state.additional_input else '없음'}
         
         **작성 가이드**:
         1. 추천 혈자리: '이름(코드) [이미지: URL]' 형식 유지.
@@ -231,24 +239,29 @@ elif st.session_state.step == "result":
            (예: "환자는 어제부터 당기는 근육통을 호소하는데 이 증상은 궐음풍목에 속하며, 어제 발생한 급성 증상이므로 락(Luo)에 해당합니다. 따라서 궐음락인 내관-여구를 선택하여 근육 압력을 해소합니다.")
         3. 요약된 SOAP 차트도 포함하세요.
         """
-        final_result = analyze_with_hybrid_fallback(FINAL_PROMPT)
-        
-        st.markdown('<div class="stCard">', unsafe_allow_html=True)
-        st.subheader("💡 최종 추천 치료 및 처방")
-        st.markdown(final_result)
-        
-        # 이미지 렌더링
-        img_patterns = re.findall(r'(\S+)\s*\[이미지:\s*(https?:\/\/[^\s\]]+)\]', final_result, re.I)
-        if img_patterns:
-            st.divider()
-            st.markdown("##### 🖼️ 혈자리 위치 가이드")
-            for name, url in img_patterns:
-                st.image(url.strip(), caption=name, use_container_width=True)
-        
-        if st.button("🔄 진료 종료 및 초기화"):
-            clear_form()
-            st.rerun()
-        st.markdown('</div>', unsafe_allow_html=True)
+        try:
+            final_result = analyze_with_hybrid_fallback(FINAL_PROMPT)
+            
+            st.markdown('<div class="stCard">', unsafe_allow_html=True)
+            st.subheader("💡 최종 추천 치료 및 처방")
+            st.markdown(final_result)
+            
+            img_patterns = re.findall(r'(\S+)\s*\[이미지:\s*(https?:\/\/[^\s\]]+)\]', final_result, re.I)
+            if img_patterns:
+                st.divider()
+                st.markdown("##### 🖼️ 혈자리 위치 가이드")
+                for name, url in img_patterns:
+                    st.image(url.strip(), caption=name, use_container_width=True)
+            
+            if st.button("🔄 진료 종료 및 초기화"):
+                clear_form()
+                st.rerun()
+            st.markdown('</div>', unsafe_allow_html=True)
+        except Exception as e:
+            st.error(f"최종 분석 중 오류 발생: {e}")
+            if st.button("처음으로 돌아가기"):
+                clear_form()
+                st.rerun()
 
 # 사이드바
 with st.sidebar:
