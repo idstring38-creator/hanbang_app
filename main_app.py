@@ -3,7 +3,7 @@ from google import genai
 import re 
 import datetime 
 
-# --- [디자인] 모바일 줄바꿈 및 화면 최적화 ---
+# --- [디자인] 모바일 줄바꿈 최적화 ---
 def apply_mobile_optimization():
     st.markdown("""
         <style>
@@ -17,30 +17,23 @@ def apply_mobile_optimization():
         </style>
     """, unsafe_allow_html=True)
 
-# --- [핵심] AI 모델 호출 함수 (자동 전환 로직) ---
+# --- [핵심] AI 모델 호출 함수 (이름 오류 및 할당량 해결) ---
 def ask_gemini(client, prompt_text):
-    # 1순위: gemini-2.0-flash (사용자가 적어주신 2.5를 최신 2.0으로 교정하거나 그대로 유지)
-    # 여기서는 사용자의 요청대로 2.5를 먼저 시도합니다.
-    try:
-        response = client.models.generate_content(
-            model='gemini-2.0-flash', # 현재 사용 가능한 최신형은 2.0입니다. 2.5는 오타일 확률이 높아 수정했습니다.
-            contents=prompt_text
-        )
-        return response.text, "2.0-Flash" # 성공 시 결과와 모델명 반환
+    # 시도해볼 모델 목록 (가장 최신순)
+    models_to_try = ['gemini-2.0-flash', 'gemini-1.5-flash']
     
-    except Exception as e:
-        # 만약 사용량 초과(429) 에러가 나면 2순위 모델로 시도
-        if "429" in str(e) or "quota" in str(e).lower():
-            try:
-                response = client.models.generate_content(
-                    model='gemini-1.5-flash', # 비교적 할당량이 넉넉한 모델
-                    contents=prompt_text
-                )
-                return response.text, "1.5-Flash (자동 전환됨)"
-            except Exception as e2:
-                return f"모든 AI 모델의 할당량이 초과되었습니다. 잠시 후 시도해주세요. ({e2})", "Error"
-        else:
-            return f"오류 발생: {e}", "Error"
+    for model_name in models_to_try:
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt_text
+            )
+            return response.text, model_name
+        except Exception as e:
+            # 429(할당량 초과)나 다른 에러가 나면 다음 모델로 넘어감
+            continue
+            
+    return "현재 모든 무료 모델의 일시적 할당량이 초과되었습니다. 1분만 기다린 후 다시 시도해주세요.", "Error"
 
 # --- 초기 설정 ---
 if 'current_time' not in st.session_state:
@@ -56,7 +49,7 @@ st.set_page_config(page_title="한의사 임상 보조 시스템", layout="wide"
 apply_mobile_optimization()
 
 st.title("🩺 한의사 임상 보조 시스템")
-st.caption("2.0 모델 우선 사용, 용량 초과 시 1.5 모델로 자동 전환됩니다.")
+st.caption("무료 버전은 1분당 호출 제한이 있습니다. 에러 발생 시 잠시 후 다시 시도해주세요.")
 
 # API 연결
 client = None
@@ -71,36 +64,26 @@ st.header(f"1. 📝 환자 대화 입력 (#{st.session_state.patient_count})")
 raw_text = st.text_area("내용을 입력하세요", key='raw_text', height=150)
 
 # 2. 치료법 DB 로드
-treatment_db_content = st.secrets.get("TREATMENT_DB", "DB 내용이 없습니다.")
+treatment_db_content = st.secrets.get("TREATMENT_DB", "로드된 DB가 없습니다.")
 
 # 3. 처리 버튼
 if st.button("✨ 전체 과정 시작", use_container_width=True):
     if not raw_text:
         st.warning("내용을 입력해주세요.")
     elif client:
-        # --- 1단계: SOAP 정리 ---
         st.header("3. ✅ SOAP 차트 정리 결과")
-        with st.spinner("AI가 차트를 분석 중입니다..."):
-            soap_prompt = f"아래 대화를 한의원 SOAP 형식(CC, S, O, A, P)으로 정리해줘:\n\n{raw_text}"
-            soap_result, model_name = ask_gemini(client, soap_prompt)
+        with st.spinner("AI 분석 중..."):
+            soap_prompt = f"아래 대화를 한의원 SOAP 형식으로 요약해줘:\n\n{raw_text}"
+            soap_result, final_model = ask_gemini(client, soap_prompt)
             
-            if model_name != "Error":
-                st.info(f"사용된 모델: {model_name}")
-                st.write(soap_result)
+            if final_model != "Error":
+                st.success(f"사용 모델: {final_model}")
+                st.info(soap_result)
                 
-                # --- 2단계: 치료법 제안 ---
                 st.header("4. 💡 최적 치료법 제안")
-                with st.spinner("치료법을 찾는 중..."):
-                    treat_prompt = f"SOAP: {soap_result}\n\nDB: {treatment_db_content}\n\n위 내용을 바탕으로 최적 치료 계획을 세워줘. 혈자리는 [이미지: URL] 형식 포함."
-                    treat_result, model_name2 = ask_gemini(client, treat_prompt)
-                    st.markdown(treat_result)
-                    
-                    # 혈자리 이미지 출력
-                    image_patterns = re.findall(r'(\S+)\s*\[이미지:\s*(https?:\/\/[^\s\]]+)\]', treat_result, re.IGNORECASE)
-                    if image_patterns:
-                        st.subheader("🖼️ 추천 혈자리 시각화")
-                        for point_name, url in image_patterns:
-                            st.image(url.strip(), caption=point_name, use_container_width=True)
+                treat_prompt = f"SOAP: {soap_result}\n\nDB: {treatment_db_content}\n\n치료 계획을 세워줘. 혈자리는 [이미지: URL] 형식 포함."
+                treat_result, _ = ask_gemini(client, treat_prompt)
+                st.markdown(treat_result)
             else:
                 st.error(soap_result)
 
