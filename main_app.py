@@ -3,89 +3,263 @@ from google import genai
 import re 
 import datetime 
 
-# --- [디자인] 모바일 줄바꿈 최적화 ---
-def apply_mobile_optimization():
-    st.markdown("""
-        <style>
-            .stMarkdown, .stText, .stCodeBlock, .stAlert, code {
-                white-space: pre-wrap !important;
-                word-break: break-all !important;
-            }
-            .main .block-container { padding: 1rem; }
-            img { max-width: 100%; height: auto; }
-            .stButton button { width: 100%; }
-        </style>
-    """, unsafe_allow_html=True)
+# --- Session State 초기화 및 시간 기록 ---
 
-# --- [핵심] AI 모델 호출 함수 (이름 오류 및 할당량 해결) ---
-def ask_gemini(client, prompt_text):
-    # 시도해볼 모델 목록 (가장 최신순)
-    models_to_try = ['gemini-2.0-flash', 'gemini-1.5-flash']
-    
-    for model_name in models_to_try:
-        try:
-            response = client.models.generate_content(
-                model=model_name,
-                contents=prompt_text
-            )
-            return response.text, model_name
-        except Exception as e:
-            # 429(할당량 초과)나 다른 에러가 나면 다음 모델로 넘어감
-            continue
-            
-    return "현재 모든 무료 모델의 일시적 할당량이 초과되었습니다. 1분만 기다린 후 다시 시도해주세요.", "Error"
+# 다음 환자 진료 시작 시, 입력 필드를 초기화하고 시간 및 환자 카운트를 업데이트
+def clear_form():
+    # raw_text 키 초기화 (대화 원문 입력 필드)
+    st.session_state.raw_text = "" 
+    # 현재 시간 및 환자 카운트 업데이트
+    st.session_state.current_time = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    st.session_state.patient_count += 1
 
-# --- 초기 설정 ---
+
 if 'current_time' not in st.session_state:
     st.session_state.current_time = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     st.session_state.patient_count = 1
 
-def clear_form():
-    st.session_state.raw_text = "" 
-    st.session_state.current_time = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    st.session_state.patient_count += 1
 
-st.set_page_config(page_title="한의사 임상 보조 시스템", layout="wide")
-apply_mobile_optimization()
+# --- Configuration and Initialization ---
+st.set_page_config(page_title="한의사 임상 보조 시스템 (통합)", layout="wide")
 
-st.title("🩺 한의사 임상 보조 시스템")
-st.caption("무료 버전은 1분당 호출 제한이 있습니다. 에러 발생 시 잠시 후 다시 시도해주세요.")
+st.title("🩺 한의사 임상 보조 시스템 (통합 버전)")
+st.caption("환자 대화 입력 한 번으로 SOAP 차트 정리와 최적 치료법 제안까지 seamless하게 진행됩니다.")
 
-# API 연결
+# API Initialization (Attempt to load client)
 client = None
 try:
     api_key = st.secrets["GEMINI_API_KEY"]
     client = genai.Client(api_key=api_key)
-except:
-    st.error("⚠️ API 키 설정을 확인해주세요.")
+except KeyError:
+    st.error("⚠️ Gemini API 키를 Streamlit Secrets에 'GEMINI_API_KEY'로 설정해주세요. 기능이 작동하지 않습니다.")
+except Exception as e:
+    st.error(f"Gemini 클라이언트 초기화 중 오류가 발생했습니다: {e}")
 
-# 1. 환자 대화 입력
-st.header(f"1. 📝 환자 대화 입력 (#{st.session_state.patient_count})")
-raw_text = st.text_area("내용을 입력하세요", key='raw_text', height=150)
+# -----------------------------------------------------------
+# --- 1. 환자 대화 원문 입력 (Step 1 Input) ---
+# -----------------------------------------------------------
 
-# 2. 치료법 DB 로드
-treatment_db_content = st.secrets.get("TREATMENT_DB", "로드된 DB가 없습니다.")
+st.header(f"1. 📝 환자 대화 원문 입력 (환자 #{st.session_state.patient_count})")
+raw_text = st.text_area("환자 대화 원문 입력 (클로바/갤럭시 복사)", key='raw_text', height=200, 
+                        placeholder="여기에 네이버 클로바 노트나 갤럭시 메모장에서 복사한 대화 텍스트를 붙여넣으세요.")
 
-# 3. 처리 버튼
-if st.button("✨ 전체 과정 시작", use_container_width=True):
+# -----------------------------------------------------------
+# --- 2. 한의원 치료법 DB 내용 로드 (Secret에서 불러옴) ---
+# -----------------------------------------------------------
+
+st.header("2. 📚 한의원 치료법 DB 내용 로드")
+st.warning("⚠️ **DB 내용은 Streamlit Secrets에 'TREATMENT_DB' 키로 저장되어 있습니다.**")
+
+treatment_db_content = None
+
+try:
+    # st.secrets에서 DB 내용을 불러옴
+    treatment_db_content = st.secrets["TREATMENT_DB"]
+    
+    # DB 내용을 확인용으로 펼쳐보기 기능 추가 (수정/입력은 불가)
+    with st.expander("현재 로드된 치료법 DB 내용 보기 (수정 불가)"):
+        st.caption("이 내용은 Streamlit Secrets에서 로드되었으며, 수정은 Streamlit Cloud Secrets에서 해야 합니다. 혈자리 이미지 URL 포함 형식: [이미지: URL]")
+        # 내용이 길 경우 일부만 보여줍니다.
+        st.text(treatment_db_content[:500] + "..." if len(treatment_db_content) > 500 else treatment_db_content)
+        
+except KeyError:
+    st.error("⚠️ 치료법 DB 내용 (TREATMENT_DB)을 Streamlit Secrets에서 찾을 수 없습니다. Secrets 설정을 확인해주세요.")
+    # 로드 실패 시 버튼을 누르지 못하도록 처리
+    treatment_db_content = None 
+
+# -----------------------------------------------------------
+# --- 3. 전체 처리 버튼 ---
+# -----------------------------------------------------------
+
+if st.button("✨ 전체 과정 시작 (SOAP 정리 & 치료법 제안)", use_container_width=True):
     if not raw_text:
-        st.warning("내용을 입력해주세요.")
-    elif client:
+        st.warning("환자 대화 원문을 입력해주세요.")
+    elif not treatment_db_content:
+        st.error("치료법 DB 내용이 Secrets에서 로드되지 않아 작업을 시작할 수 없습니다.")
+    elif not client:
+        st.error("Gemini 클라이언트 초기화 오류로 인해 작업을 시작할 수 없습니다. API 키를 확인하세요.")
+    else:
+        # --- [Process Step 1] SOAP Generation ---
         st.header("3. ✅ SOAP 차트 정리 결과")
-        with st.spinner("AI 분석 중..."):
-            soap_prompt = f"아래 대화를 한의원 SOAP 형식으로 요약해줘:\n\n{raw_text}"
-            soap_result, final_model = ask_gemini(client, soap_prompt)
-            
-            if final_model != "Error":
-                st.success(f"사용 모델: {final_model}")
-                st.info(soap_result)
+        
+        SOAP_PROMPT_TEMPLATE = """
+        당신은 숙련된 한의사 보조 AI입니다. 아래의 환자 대화 원문을 분석하여 
+        한의학 진료에 필요한 **SOAP 형식(Subjective, Objective, Assessment, Plan)**으로 깔끔하게 요약 정리해 주세요.
+        (P는 일반적인 계획으로 간략히 요약하고, 상세 계획은 다음 단계에서 제시합니다.)
+        
+        ---
+        
+        [환자 대화 원문]:
+        {text_input}
+        
+        ---
+        
+        요약 결과는 아래 형식으로 출력하고, 다른 설명이나 주석은 포함하지 마세요:
+        
+        CC: [주된 증상]
+        S: [환자가 말한 상세 정보]
+        O: [관찰된 객관적 증상 (없으면 N/A 또는 생략)]
+        A: [한의학적 진단/평가]
+        P: [치료 계획]
+        """
+        
+        soap_result_text = None
+        부위_형태_키 = "결과_없음" 
+        
+        with st.spinner("1단계: SOAP 차트 정리 중..."):
+            try:
+                final_soap_prompt = SOAP_PROMPT_TEMPLATE.format(text_input=raw_text)
                 
-                st.header("4. 💡 최적 치료법 제안")
-                treat_prompt = f"SOAP: {soap_result}\n\nDB: {treatment_db_content}\n\n치료 계획을 세워줘. 혈자리는 [이미지: URL] 형식 포함."
-                treat_result, _ = ask_gemini(client, treat_prompt)
-                st.markdown(treat_result)
-            else:
-                st.error(soap_result)
+                soap_response = client.models.generate_content(
+                    model='gemini-2.5-flash',
+                    contents=final_soap_prompt,
+                )
+                
+                soap_result_text = soap_response.text
+                st.code(soap_result_text, language="text")
+                st.success("1단계: SOAP 차트 정리 완료. (자동으로 2단계로 넘어갑니다.)")
 
+                # ----------------------------------------------------
+                # **[다운로드 기능] 파일명 생성: '아픈 부위_아픈 형태.txt' 형식 적용**
+                # ----------------------------------------------------
+                
+                # 'A' 또는 'CC' 섹션의 첫 줄 내용을 활용하여 파일명 키워드 추출
+                match = re.search(r'^(A|CC):\s*([\s\S]+?)\n', soap_result_text, re.MULTILINE)
+                
+                if match:
+                    key_content = match.group(2).strip().split('\n')[0].strip()
+                    clean_content = re.sub(r'(진단|추정|변증|의심|상태|관련|입니다|보임)', '', key_content).strip()
+                    words = clean_content.split()
+                    
+                    부위 = "부위"
+                    형태 = "증상"
+                    
+                    if len(words) >= 2:
+                        부위 = words[0][:5] 
+                        형태 = words[1][:5] 
+                    elif len(words) == 1:
+                        부위 = words[0][:5]
+                        형태 = "증상"
+                        
+                    부위_형태_키 = f"{부위}_{형태}"
+                    # 파일명에 쓸 수 없거나 불필요한 문자 제거
+                    부위_형태_키 = re.sub(r'[^\w-]', '', 부위_형태_키.replace(' ', '_')) 
+
+                # 최종 파일명 생성
+                soap_filename_base = 부위_형태_키
+                soap_filename = f"SOAP_{soap_filename_base}_{st.session_state.current_time}.txt"
+                
+                # 다운로드 버튼 생성
+                st.download_button(
+                    label="⬇️ SOAP 차트 다운로드 (텍스트 파일)",
+                    data=soap_result_text,
+                    file_name=soap_filename,
+                    mime="text/plain",
+                    help=f"파일명 형식: SOAP_{soap_filename_base}.txt",
+                    use_container_width=True
+                )
+
+            except Exception as e:
+                st.error(f"1단계(SOAP 정리) 중 오류가 발생했습니다: {e}")
+                
+        # --- [Process Step 2] Treatment Suggestion (Automatic input) ---
+        
+        if soap_result_text:
+            st.header("4. 💡 최적 치료법 제안 및 혈자리 시각화")
+            
+            TREATMENT_PROMPT_TEMPLATE = """
+            당신은 숙련된 한의사 AI 어시스턴트입니다. 다음의 환자 SOAP 차트와 제공된 치료법 DB를 분석하여 
+            환자에게 가장 적합한 **치료 계획(Plan)의 상세 내용**을 제안하세요.
+
+            **[출력 형식 및 기준]**
+            * 환자의 CC와 A를 간략히 다시 언급하여 상태를 확인합니다.
+            * 추천 치료법(침/뜸/부항)과 추천 추나기법(한방물리치료)를 명확히 구분하여 출력합니다.
+            * 혈자리를 추천할 경우, **DB에 제공된 형식 그대로** 혈자리 이름과 이미지 URL을 포함하여 출력해주세요. (예: 중완(CV12) [이미지: https://.../CV12.jpg])
+            * 출력은 텍스트 파일 형식으로 정리하며, **오직 분석 결과와 상세 치료 계획**만 포함하고 다른 잡담은 일절 하지 마세요.
+            
+            ---
+            
+            **[환자의 SOAP 차트]:**
+            {soap_input}
+
+            ---
+            
+            **[한의원 치료법 DB (혈자리 이미지 URL 포함)]:**
+            {db_input}
+            
+            ---
+            
+            **[최적 치료 계획 제안]:**
+            """
+
+            with st.spinner("2단계: 최적 치료법 분석 및 시각화 준비 중..."):
+                try:
+                    # SOAP 결과를 다음 프롬프트에 자동 삽입
+                    final_treatment_prompt = TREATMENT_PROMPT_TEMPLATE.format(
+                        soap_input=soap_result_text,
+                        db_input=treatment_db_content
+                    )
+                    
+                    treatment_response = client.models.generate_content(
+                        model='gemini-2.5-flash',
+                        contents=final_treatment_prompt,
+                    )
+                    
+                    treatment_text = treatment_response.text
+                    st.success("2단계: 치료 계획 분석 완료.")
+                    
+                    # --- [Output Step 3] Parse and Display Images ---
+                    
+                    st.subheader("📋 추천 치료 계획 상세")
+                    st.markdown(treatment_text)
+                    
+                    # ----------------------------------------------------
+                    # **최종 진료 보고서 다운로드 기능**
+                    # ----------------------------------------------------
+                    
+                    full_report = f"--- 진료 보고서 ({부위_형태_키}) ---\n\n[환자 대화 원문]\n{raw_text}\n\n[SOAP 차트 결과]\n{soap_result_text}\n\n[최적 치료 계획 제안]\n{treatment_text}"
+                    
+                    full_filename_base = f"Report_{부위_형태_키}"
+                    full_filename = f"{full_filename_base}_{st.session_state.current_time}.md"
+                    
+                    st.download_button(
+                        label="⬇️ 최종 진료 보고서 다운로드 (Markdown)",
+                        data=full_report,
+                        file_name=full_filename,
+                        mime="text/markdown",
+                        help=f"SOAP, 원문, 치료법 제안이 모두 포함된 최종 보고서를 저장합니다. 파일명 형식: {full_filename_base}.md",
+                        use_container_width=True
+                    )
+                    
+                    # ----------------------------------------------------
+                    # **혈자리 시각화**
+                    # ----------------------------------------------------
+                    
+                    st.subheader("🖼️ 추천 혈자리 시각화")
+                    
+                    # LLM 출력 텍스트에서 '혈자리 이름 [이미지: URL]' 패턴 추출
+                    image_patterns = re.findall(r'(\S+)\s*\[이미지:\s*(https?:\/\/[^\s\]]+)\]', treatment_text, re.IGNORECASE)
+                    
+                    if not image_patterns:
+                        st.info("추천된 치료 계획 텍스트에서 혈자리 이미지 URL을 찾을 수 없습니다. DB 입력 형식을 확인해주세요.")
+                    else:
+                        st.write(f"총 {len(image_patterns)}개의 혈자리 이미지를 찾았습니다.")
+                        
+                        cols = st.columns(min(len(image_patterns), 3)) 
+                        
+                        for i, (point_name, url) in enumerate(image_patterns):
+                            try:
+                                # 혈자리 그림 시각화
+                                cols[i % len(cols)].image(url.strip(), caption=point_name, width=200)
+                            except Exception as img_e:
+                                cols[i % len(cols)].error(f"이미지 로드 오류 ({point_name}): {img_e}")
+                                
+                except Exception as e:
+                    st.error(f"2단계(치료법 제안) 중 오류가 발생했습니다: {e}")
+
+# -----------------------------------------------------------
+# --- 5. 다음 환자 진료 시작 버튼 ---
+# -----------------------------------------------------------
 st.markdown("---")
-st.button("🏥 다음 환자 진료 시작", on_click=clear_form, use_container_width=True)
+st.header("5. 다음 환자 진료 시작")
+st.button("🏥 다음 환자 진료 시작 (입력 필드 초기화)", on_click=clear_form, use_container_width=True)
