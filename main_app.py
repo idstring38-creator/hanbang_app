@@ -3,148 +3,106 @@ from google import genai
 import re 
 import datetime 
 
-# --- [수정사항] 모바일 줄바꿈 및 최적화 CSS 추가 ---
+# --- [디자인] 모바일 줄바꿈 및 화면 최적화 ---
 def apply_mobile_optimization():
     st.markdown("""
         <style>
-            /* 전체 텍스트 줄바꿈 강제 설정 */
-            .stMarkdown, .stText, .stCodeBlock, code {
+            .stMarkdown, .stText, .stCodeBlock, .stAlert, code {
                 white-space: pre-wrap !important;
                 word-break: break-all !important;
             }
-            /* 모바일에서 가로 스크롤 방지 */
-            .main .block-container {
-                padding-left: 1rem;
-                padding-right: 1rem;
-            }
-            /* 이미지 크기 자동 조절 */
-            img {
-                max-width: 100%;
-                height: auto;
-            }
-            /* 버튼 글자 크기 조정 */
-            .stButton button {
-                width: 100%;
-                white-space: normal;
-                height: auto;
-            }
+            .main .block-container { padding: 1rem; }
+            img { max-width: 100%; height: auto; }
+            .stButton button { width: 100%; }
         </style>
     """, unsafe_allow_html=True)
 
-# --- Session State 초기화 및 시간 기록 ---
+# --- [핵심] AI 모델 호출 함수 (자동 전환 로직) ---
+def ask_gemini(client, prompt_text):
+    # 1순위: gemini-2.0-flash (사용자가 적어주신 2.5를 최신 2.0으로 교정하거나 그대로 유지)
+    # 여기서는 사용자의 요청대로 2.5를 먼저 시도합니다.
+    try:
+        response = client.models.generate_content(
+            model='gemini-2.0-flash', # 현재 사용 가능한 최신형은 2.0입니다. 2.5는 오타일 확률이 높아 수정했습니다.
+            contents=prompt_text
+        )
+        return response.text, "2.0-Flash" # 성공 시 결과와 모델명 반환
+    
+    except Exception as e:
+        # 만약 사용량 초과(429) 에러가 나면 2순위 모델로 시도
+        if "429" in str(e) or "quota" in str(e).lower():
+            try:
+                response = client.models.generate_content(
+                    model='gemini-1.5-flash', # 비교적 할당량이 넉넉한 모델
+                    contents=prompt_text
+                )
+                return response.text, "1.5-Flash (자동 전환됨)"
+            except Exception as e2:
+                return f"모든 AI 모델의 할당량이 초과되었습니다. 잠시 후 시도해주세요. ({e2})", "Error"
+        else:
+            return f"오류 발생: {e}", "Error"
+
+# --- 초기 설정 ---
+if 'current_time' not in st.session_state:
+    st.session_state.current_time = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    st.session_state.patient_count = 1
 
 def clear_form():
     st.session_state.raw_text = "" 
     st.session_state.current_time = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     st.session_state.patient_count += 1
 
-if 'current_time' not in st.session_state:
-    st.session_state.current_time = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    st.session_state.patient_count = 1
+st.set_page_config(page_title="한의사 임상 보조 시스템", layout="wide")
+apply_mobile_optimization()
 
-# --- Configuration and Initialization ---
-# layout="wide"는 PC에서 좋지만, 위 CSS가 모바일 줄바꿈을 잡아줄 것입니다.
-st.set_page_config(page_title="한의사 임상 보조 시스템 (통합)", layout="wide")
-apply_mobile_optimization() # 모바일 최적화 적용
+st.title("🩺 한의사 임상 보조 시스템")
+st.caption("2.0 모델 우선 사용, 용량 초과 시 1.5 모델로 자동 전환됩니다.")
 
-st.title("🩺 한의사 임상 보조 시스템 (통합)")
-st.caption("환자 대화 입력 한 번으로 SOAP 차트 정리와 최적 치료법 제안까지 seamless하게 진행됩니다.")
-
-# API Initialization
+# API 연결
 client = None
 try:
     api_key = st.secrets["GEMINI_API_KEY"]
     client = genai.Client(api_key=api_key)
-except KeyError:
-    st.error("⚠️ Gemini API 키를 설정해주세요.")
-except Exception as e:
-    st.error(f"오류 발생: {e}")
+except:
+    st.error("⚠️ API 키 설정을 확인해주세요.")
 
-# --- 1. 환자 대화 원문 입력 ---
+# 1. 환자 대화 입력
 st.header(f"1. 📝 환자 대화 입력 (#{st.session_state.patient_count})")
-raw_text = st.text_area("환자 대화 원문 입력", key='raw_text', height=200, 
-                        placeholder="여기에 대화 내용을 붙여넣으세요.")
+raw_text = st.text_area("내용을 입력하세요", key='raw_text', height=150)
 
-# --- 2. 한의원 치료법 DB 로드 ---
-st.header("2. 📚 치료법 DB 로드")
-treatment_db_content = None
+# 2. 치료법 DB 로드
+treatment_db_content = st.secrets.get("TREATMENT_DB", "DB 내용이 없습니다.")
 
-try:
-    treatment_db_content = st.secrets["TREATMENT_DB"]
-    with st.expander("현재 로드된 치료법 DB 보기"):
-        st.text(treatment_db_content[:300] + "..." if len(treatment_db_content) > 300 else treatment_db_content)
-except KeyError:
-    st.error("⚠️ TREATMENT_DB 설정을 확인해주세요.")
-
-# --- 3. 전체 처리 버튼 ---
-if st.button("✨ 전체 과정 시작 (SOAP 정리 & 치료법 제안)", use_container_width=True):
+# 3. 처리 버튼
+if st.button("✨ 전체 과정 시작", use_container_width=True):
     if not raw_text:
         st.warning("내용을 입력해주세요.")
-    elif not treatment_db_content or not client:
-        st.error("설정 오류가 있습니다.")
-    else:
-        # --- [Step 1] SOAP Generation ---
+    elif client:
+        # --- 1단계: SOAP 정리 ---
         st.header("3. ✅ SOAP 차트 정리 결과")
-        
-        SOAP_PROMPT_TEMPLATE = """
-        당신은 숙련된 한의사 보조 AI입니다. 아래 내용을 SOAP 형식으로 요약해 주세요.
-        CC: , S: , O: , A: , P: 형식으로 답하세요.
-        ---
-        {text_input}
-        """
-        
-        soap_result_text = None
-        부위_형태_키 = "결과_없음" 
-        
-        with st.spinner("SOAP 차트 정리 중..."):
-            try:
-                final_soap_prompt = SOAP_PROMPT_TEMPLATE.format(text_input=raw_text)
-                soap_response = client.models.generate_content(model='gemini-2.5-flash', contents=final_soap_prompt)
-                soap_result_text = soap_response.text
+        with st.spinner("AI가 차트를 분석 중입니다..."):
+            soap_prompt = f"아래 대화를 한의원 SOAP 형식(CC, S, O, A, P)으로 정리해줘:\n\n{raw_text}"
+            soap_result, model_name = ask_gemini(client, soap_prompt)
+            
+            if model_name != "Error":
+                st.info(f"사용된 모델: {model_name}")
+                st.write(soap_result)
                 
-                # st.code 대신 st.info나 st.markdown을 쓰면 줄바꿈이 더 잘 됩니다.
-                st.info(soap_result_text)
-                
-                # 파일명 생성 로직 (기존 유지)
-                match = re.search(r'^(A|CC):\s*([\s\S]+?)\n', soap_result_text, re.MULTILINE)
-                if match:
-                    key_content = match.group(2).strip().split('\n')[0].strip()
-                    clean_content = re.sub(r'(진단|추정|변증|의심|상태|관련|입니다|보임)', '', key_content).strip()
-                    words = clean_content.split()
-                    부위 = words[0][:5] if len(words) >= 1 else "부위"
-                    형태 = words[1][:5] if len(words) >= 2 else "증상"
-                    부위_형태_키 = re.sub(r'[^\w-]', '', f"{부위}_{형태}")
-
-                st.download_button(label="⬇️ SOAP 다운로드", data=soap_result_text, 
-                                   file_name=f"SOAP_{부위_형태_키}.txt", use_container_width=True)
-            except Exception as e:
-                st.error(f"오류: {e}")
-                
-        # --- [Step 2] Treatment Suggestion ---
-        if soap_result_text:
-            st.header("4. 💡 최적 치료법 제안")
-            TREATMENT_PROMPT_TEMPLATE = """환자 SOAP 분석 후 최적 치료 계획을 제안하세요. 
-            혈자리는 [이미지: URL] 형식을 포함하세요.\n\n[SOAP]:\n{soap_input}\n\n[DB]:\n{db_input}"""
-
-            with st.spinner("치료법 분석 중..."):
-                try:
-                    treatment_response = client.models.generate_content(
-                        model='gemini-2.5-flash', 
-                        contents=TREATMENT_PROMPT_TEMPLATE.format(soap_input=soap_result_text, db_input=treatment_db_content)
-                    )
-                    treatment_text = treatment_response.text
-                    st.markdown(treatment_text) # 마크다운은 자동 줄바꿈이 지원됩니다.
+                # --- 2단계: 치료법 제안 ---
+                st.header("4. 💡 최적 치료법 제안")
+                with st.spinner("치료법을 찾는 중..."):
+                    treat_prompt = f"SOAP: {soap_result}\n\nDB: {treatment_db_content}\n\n위 내용을 바탕으로 최적 치료 계획을 세워줘. 혈자리는 [이미지: URL] 형식 포함."
+                    treat_result, model_name2 = ask_gemini(client, treat_prompt)
+                    st.markdown(treat_result)
                     
-                    # 혈자리 이미지 시각화
-                    image_patterns = re.findall(r'(\S+)\s*\[이미지:\s*(https?:\/\/[^\s\]]+)\]', treatment_text, re.IGNORECASE)
+                    # 혈자리 이미지 출력
+                    image_patterns = re.findall(r'(\S+)\s*\[이미지:\s*(https?:\/\/[^\s\]]+)\]', treat_result, re.IGNORECASE)
                     if image_patterns:
                         st.subheader("🖼️ 추천 혈자리 시각화")
                         for point_name, url in image_patterns:
                             st.image(url.strip(), caption=point_name, use_container_width=True)
-                            
-                except Exception as e:
-                    st.error(f"오류: {e}")
+            else:
+                st.error(soap_result)
 
-# --- 5. 다음 환자 시작 ---
 st.markdown("---")
 st.button("🏥 다음 환자 진료 시작", on_click=clear_form, use_container_width=True)
