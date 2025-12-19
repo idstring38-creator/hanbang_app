@@ -189,8 +189,8 @@ if st.session_state.step == "input":
                             st.session_state.soap_result = clean_newlines(parts[0].replace("[SOAP 요약]", "").strip())
                             st.session_state.follow_up_questions = clean_newlines(parts[1].strip())
                         else:
-                            st.session_state.soap_result = clean_newlines(result)
-                            st.session_state.follow_up_questions = "추가 확인이 필요하지 않을 정도로 정보가 충분합니다. (확인 버튼을 눌러주세요)"
+                            st.session_state.soap_result = clean_newlines(result.replace("[SOAP 요약]", "").strip())
+                            st.session_state.follow_up_questions = "추가 질문 없음"
                         
                         st.session_state.raw_text = raw_text
                         
@@ -209,12 +209,20 @@ elif st.session_state.step == "verify":
     st.subheader("📋 1차 SOAP 요약")
     st.markdown(f'<div class="soap-box">{st.session_state.soap_result}</div>', unsafe_allow_html=True)
     
-    st.markdown('<div class="q-box">', unsafe_allow_html=True)
-    st.markdown("##### 🔍 추가 확인이 필요합니다")
-    st.markdown(st.session_state.follow_up_questions)
-    st.markdown('</div>', unsafe_allow_html=True)
+    # 추가 질문이 있는 경우에만 질문 박스 표시
+    if st.session_state.follow_up_questions and "질문 없음" not in st.session_state.follow_up_questions:
+        st.markdown('<div class="q-box">', unsafe_allow_html=True)
+        st.markdown("##### 🔍 추가 확인이 필요합니다")
+        st.markdown(st.session_state.follow_up_questions)
+        st.markdown('</div>', unsafe_allow_html=True)
     
-    additional_info = st.text_area("추가 확인 내용 또는 검사 결과 입력 (선택사항)", key="additional_info_input", placeholder="예: 야간통 없음, SLR 70도 정상...")
+    # 입력창 크기를 Step 1과 동일하게 height=200으로 설정
+    additional_info = st.text_area(
+        "추가 확인 내용 또는 검사 결과 입력 (선택사항)", 
+        key="additional_info_input", 
+        height=200,
+        placeholder="예: 야간통 없음, SLR 70도 정상..."
+    )
     
     st.markdown('<div class="verify-btn">', unsafe_allow_html=True)
     if st.button("✅ 최종 확인 및 처방 생성"):
