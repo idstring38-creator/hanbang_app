@@ -242,17 +242,20 @@ elif st.session_state.step == "result":
         [추가 문진 정보]: {st.session_state.additional_input}
         
         **핵심 지침**:
-        1. **측성 원칙 엄수**: [치료 DB]의 `TYPE_DEFINITIONS` 섹션에 정의된 `side` 원칙(대측/동측)을 반드시 확인하세요. 
-           - 극혈(Xi-Cleft): 대측(Contralateral) 취혈
-           - 락혈(Luo-Connecting): 동측(Ipsilateral) 취혈
-           - 원혈(Source-Original): 동측(Ipsilateral) 취혈
-           처방 텍스트에 반드시 "OO측 취혈"이라고 명시하여 원장님이 혼동하지 않게 하세요.
+        1. **측성 원칙 엄수**: [치료 DB]의 `side` 원칙(대측/동측)을 반드시 확인하세요. 
+           - 극혈: 대측 취혈
+           - 락혈: 동측 취혈
+           - 원혈: 동측 취혈
+           처방 시 "OO측 취혈"이라고 명확히 한글로만 기재하세요. (Contralateral 등 영어 단어 사용 금지)
+        2. **질환 분석 (양방/한방)**:
+           - [양방 관점]: 의심되는 양방 질환명(예: 요추 디스크, 테니스 엘보 등)과 문제가 있는 신체 부위(근육, 신경, 인대 등)를 구체적으로 기술하고 그 근거를 자세히 서술하세요.
+           - [한방 관점]: 육기 이론에 따른 진단(예: 소양상화의 치솟음, 태양한수의 부족 등)과 변증 근거를 상세히 서술하세요.
         
         **작성 가이드**:
-        1. 추천 혈자리: '이름(코드)' 형식으로만 작성하세요. (텍스트 옆에 이미지 링크 [이미지: URL]를 절대 포함하지 마세요.)
+        1. 추천 혈자리: '이름(코드)' 형식으로만 작성하세요. (텍스트 옆에 이미지 링크나 영문 병기를 절대 포함하지 마세요.)
         2. **선택 이유 (필수)**: 각 혈자리를 선택한 이유를 육기 이론과 환자의 구체적 증상을 연결하여 상세히 설명하세요.
         3. 최종 완성된 SOAP 차트를 포함하세요.
-        4. 답변 하단에 분석에 사용된 모든 혈자리에 대해 반드시 `이름(코드) [이미지: URL]` 형식을 한 줄씩 나열하여 '혈자리 위치 가이드' 섹션에서 이미지가 보일 수 있도록 하세요.
+        4. **주의**: 답변 중간에 '혈자리 위치 가이드' 섹션을 만들지 마세요. 오직 답변 가장 하단에 이미지 생성을 위한 `이름(코드) [이미지: URL]` 리스트만 한 줄씩 나열하세요.
         """
         try:
             final_result = analyze_with_hybrid_fallback(FINAL_PROMPT)
@@ -261,12 +264,11 @@ elif st.session_state.step == "result":
             st.subheader("💡 최종 추천 치료 및 처방")
             st.markdown(final_result)
             
-            # 텍스트 내에서 이미지 패턴 추출 (하단 가이드용)
+            # 텍스트 내에서 이미지 패턴 추출 (최하단 가이드 전용)
             img_patterns = re.findall(r'(\S+)\s*\[이미지:\s*(https?:\/\/[^\s\]]+)\]', final_result, re.I)
             if img_patterns:
                 st.divider()
                 st.markdown("##### 🖼️ 혈자리 위치 가이드")
-                # 중복 이미지 제거를 위해 set 사용
                 seen_urls = set()
                 cols = st.columns(2)
                 for idx, (name, url) in enumerate(img_patterns):
