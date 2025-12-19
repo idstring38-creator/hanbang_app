@@ -143,7 +143,7 @@ elif st.session_state.step == "result":
     # 모바일 연동 버튼
     save_col1, save_col2 = st.columns(2)
     with save_col1:
-        if st.button("📲 모바일(구글 시트)로 전송", variant="primary", use_container_width=True):
+        if st.button("📲 모바일(구글 시트)로 전송", use_container_width=True):
             with st.spinner("구글 시트 동기화 중..."):
                 if save_to_google_sheets(st.session_state.patient_name, st.session_state.final_plan):
                     st.success("데이터 전송 완료! 모바일 앱을 확인하세요.")
@@ -153,4 +153,5 @@ elif st.session_state.step == "result":
     with save_col2:
         if st.button("🔄 다음 진료 (초기화)", use_container_width=True):
             clear_form()
+
             st.rerun()
