@@ -93,22 +93,23 @@ except:
     st.error("⚠️ TREATMENT_DB 설정이 필요합니다.")
     st.stop()
 
-# --- 4. 멀티 모델 스마트 폴백 로직 ---
+# --- 4. 멀티 모델 스마트 폴백 로직 (모델 경로 수정) ---
 def analyze_with_multi_model_fallback(prompt):
     """
     1.5 Flash -> 1.5 Flash-8B -> 1.5 Pro 순서로 시도하여 할당량 문제를 우회합니다.
+    최신 API 규격에 맞춰 모델 ID를 수정했습니다.
     """
     models_to_try = [
         'gemini-1.5-flash',
         'gemini-1.5-flash-8b',
-        'gemini-1.5-pro'
+        'gemini-1.5-pro',
+        'gemini-2.0-flash-exp' # 최신 실험적 모델 추가 (선택사항)
     ]
     
     last_error = None
     
     for model_name in models_to_try:
         try:
-            # 모델별 시도 알림 (작은 캡션으로 표시 가능)
             response = client.models.generate_content(
                 model=model_name,
                 contents=prompt,
@@ -116,14 +117,26 @@ def analyze_with_multi_model_fallback(prompt):
             return response.text, model_name
         except Exception as e:
             last_error = e
+            # 404 에러 발생 시 다른 이름 형식으로 한 번 더 시도
+            if "404" in str(e) and not model_name.startswith("models/"):
+                try:
+                    retry_model_name = f"models/{model_name}"
+                    response = client.models.generate_content(
+                        model=retry_model_name,
+                        contents=prompt,
+                    )
+                    return response.text, retry_model_name
+                except:
+                    continue
+            
+            # 할당량 초과(429) 시 다음 모델로 이동
             if "429" in str(e):
-                # 할당량 초과 시 다음 모델로 즉시 넘어감
                 continue
             else:
-                # 기타 에러는 즉시 중단
-                raise e
+                # 기타 심각한 에러는 기록 후 다음 모델 시도
+                continue
     
-    # 모든 모델이 실패한 경우
+    # 모든 모델이 실패한 경우 마지막 에러를 발생시킴
     raise last_error
 
 # --- 5. 사이드바 및 레이아웃 ---
@@ -204,10 +217,8 @@ if analyze_btn and raw_text:
                     st.markdown('</div>', unsafe_allow_html=True)
 
         except Exception as e:
-            if "429" in str(e):
-                st.error("🚨 모든 모델의 할당량이 소진되었습니다. 약 1분 후 다시 시도해 주세요.")
-            else:
-                st.error(f"분석 중 오류 발생: {e}")
+            st.error(f"분석 중 오류 발생: {e}")
+            st.info("💡 API 설정 문제일 수 있습니다. 모델 이름을 'models/gemini-1.5-flash' 형식으로 변경하여 시도 중입니다.")
 
 elif not analyze_btn:
     with col_out:
