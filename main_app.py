@@ -93,17 +93,16 @@ except:
     st.error("⚠️ TREATMENT_DB 설정이 필요합니다.")
     st.stop()
 
-# --- 4. 멀티 모델 스마트 폴백 로직 (모델 경로 수정) ---
+# --- 4. 멀티 모델 스마트 폴백 로직 ---
 def analyze_with_multi_model_fallback(prompt):
     """
     1.5 Flash -> 1.5 Flash-8B -> 1.5 Pro 순서로 시도하여 할당량 문제를 우회합니다.
-    최신 API 규격에 맞춰 모델 ID를 수정했습니다.
     """
     models_to_try = [
         'gemini-1.5-flash',
         'gemini-1.5-flash-8b',
         'gemini-1.5-pro',
-        'gemini-2.0-flash-exp' # 최신 실험적 모델 추가 (선택사항)
+        'gemini-2.0-flash-exp'
     ]
     
     last_error = None
@@ -117,7 +116,6 @@ def analyze_with_multi_model_fallback(prompt):
             return response.text, model_name
         except Exception as e:
             last_error = e
-            # 404 에러 발생 시 다른 이름 형식으로 한 번 더 시도
             if "404" in str(e) and not model_name.startswith("models/"):
                 try:
                     retry_model_name = f"models/{model_name}"
@@ -129,14 +127,11 @@ def analyze_with_multi_model_fallback(prompt):
                 except:
                     continue
             
-            # 할당량 초과(429) 시 다음 모델로 이동
             if "429" in str(e):
                 continue
             else:
-                # 기타 심각한 에러는 기록 후 다음 모델 시도
                 continue
     
-    # 모든 모델이 실패한 경우 마지막 에러를 발생시킴
     raise last_error
 
 # --- 5. 사이드바 및 레이아웃 ---
@@ -218,12 +213,12 @@ if analyze_btn and raw_text:
 
         except Exception as e:
             st.error(f"분석 중 오류 발생: {e}")
-            st.info("💡 API 설정 문제일 수 있습니다. 모델 이름을 'models/gemini-1.5-flash' 형식으로 변경하여 시도 중입니다.")
 
 elif not analyze_btn:
     with col_out:
         st.info("환자 대화를 입력하면 AI가 SOAP 정리와 혈자리 제안을 시작합니다.")
-        st.image("https://cdn-icons-png.flaticon.com/512/3865/3865922.png", width=120, alpha=0.2)
+        # 에러 발생 지점 수정: 최신 Streamlit 라이브러리 규격에 맞춰 alpha 옵션 제거
+        st.image("https://cdn-icons-png.flaticon.com/512/3865/3865922.png", width=120)
 
 st.divider()
 st.caption(f"© 2025 임상 보조 시스템 | 현재 시간: {st.session_state.current_time}")
