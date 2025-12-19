@@ -120,7 +120,7 @@ except:
     st.error("⚠️ TREATMENT_DB 설정이 필요합니다.")
     st.stop()
 
-# --- 4. 분석 엔진 (문법 수정 완료) ---
+# --- 4. 분석 엔진 ---
 def analyze_with_hybrid_fallback(prompt):
     # 1단계: Gemini
     gemini_models = ['models/gemini-1.5-flash', 'models/gemini-1.5-flash-8b']
@@ -130,10 +130,9 @@ def analyze_with_hybrid_fallback(prompt):
             if response and response.text:
                 return response.text
         except Exception as e:
-            # 할당량 초과 등의 경우 다음 모델로 시도
             continue
             
-    # 2단계: Groq (Gemini 실패 시)
+    # 2단계: Groq
     if groq_client:
         try:
             chat_completion = groq_client.chat.completions.create(
@@ -145,8 +144,7 @@ def analyze_with_hybrid_fallback(prompt):
         except Exception as e:
             st.error(f"Groq 호출 실패: {e}")
     
-    # 모든 시도가 실패한 경우
-    raise Exception("모든 AI 모델 호출에 실패했습니다. API 키나 연결 상태를 확인하세요.")
+    raise Exception("모든 AI 모델 호출에 실패했습니다.")
 
 def clean_newlines(text):
     if not text: return ""
@@ -173,29 +171,31 @@ if st.session_state.step == "input":
             if raw_text:
                 with st.spinner("증상을 분석 중입니다..."):
                     FIRST_PROMPT = f"""
-                    한의사 보조 AI로서 다음 대화 원문을 분석하세요.
-                    1. SOAP 형식으로 요약 (줄바꿈 최소화).
-                    2. 진단을 확정하기 위해 추가로 환자에게 물어봐야 할 질문이나 필요한 이학적 검사가 있다면 [추가 확인 사항] 섹션에 리스트로 작성하세요. 없다면 '없음'이라고 적으세요.
+                    당신은 노련한 한의사 보조 AI입니다. 다음 대화 원문을 바탕으로 '문진 단계'를 수행하세요.
+                    절대로 먼저 치료법이나 혈자리를 추천하지 마세요.
                     
-                    [대화]: {raw_text}
+                    **답변 형식**:
+                    1. [SOAP 요약]: 환자의 주소증과 현 상태를 SOAP 형식으로 간략히 요약하세요 (줄바꿈 최소화).
+                    2. [추가 확인 사항]: 정확한 육기 진단과 원락극 처방을 위해 원장님이 환자에게 추가로 물어봐야 할 질문이나 수행해야 할 이학적 검사 리스트를 작성하세요.
+                    
+                    [대화 원문]: {raw_text}
                     """
                     try:
                         result = analyze_with_hybrid_fallback(FIRST_PROMPT)
                         
+                        # 섹션 구분 파싱
                         if "[추가 확인 사항]" in result:
                             parts = result.split("[추가 확인 사항]")
-                            st.session_state.soap_result = clean_newlines(parts[0])
-                            st.session_state.follow_up_questions = clean_newlines(parts[1])
+                            st.session_state.soap_result = clean_newlines(parts[0].replace("[SOAP 요약]", "").strip())
+                            st.session_state.follow_up_questions = clean_newlines(parts[1].strip())
                         else:
                             st.session_state.soap_result = clean_newlines(result)
-                            st.session_state.follow_up_questions = "없음"
+                            st.session_state.follow_up_questions = "추가 확인이 필요하지 않을 정도로 정보가 충분합니다. (확인 버튼을 눌러주세요)"
                         
                         st.session_state.raw_text = raw_text
                         
-                        if "없음" in st.session_state.follow_up_questions or len(st.session_state.follow_up_questions) < 5:
-                            st.session_state.step = "result"
-                        else:
-                            st.session_state.step = "verify"
+                        # 무조건 verify 단계로 이동하여 원장님의 확인을 거치도록 함
+                        st.session_state.step = "verify"
                         st.rerun()
                     except Exception as e:
                         st.error(f"분석 중 오류 발생: {e}")
@@ -214,11 +214,11 @@ elif st.session_state.step == "verify":
     st.markdown(st.session_state.follow_up_questions)
     st.markdown('</div>', unsafe_allow_html=True)
     
-    additional_info = st.text_area("추가 확인 내용 또는 검사 결과 입력", key="additional_info_input", placeholder="예: SLR 30도에서 양성, 야간통은 없음...")
+    additional_info = st.text_area("추가 확인 내용 또는 검사 결과 입력 (선택사항)", key="additional_info_input", placeholder="예: 야간통 없음, SLR 70도 정상...")
     
     st.markdown('<div class="verify-btn">', unsafe_allow_html=True)
     if st.button("✅ 최종 확인 및 처방 생성"):
-        st.session_state.additional_input = additional_info
+        st.session_state.additional_input = additional_info if additional_info else "특이사항 없음"
         st.session_state.step = "result"
         st.rerun()
     st.markdown('</div>', unsafe_allow_html=True)
@@ -227,17 +227,16 @@ elif st.session_state.step == "verify":
 elif st.session_state.step == "result":
     with st.spinner("최종 치료 계획을 수립 중..."):
         FINAL_PROMPT = f"""
-        당신은 한의사 보조 AI입니다. 아래 정보를 바탕으로 육기(六氣) 원·락·극 체계에 맞춘 최종 치료 Plan을 작성하세요.
+        당신은 한의사 보조 AI입니다. 아래 정보를 종합하여 육기(六氣) 원·락·극 체계에 맞춘 최종 치료 Plan을 작성하세요.
         
         [치료 DB]: {treatment_db_content}
-        [1차 분석]: {st.session_state.soap_result}
-        [추가 정보]: {st.session_state.additional_input if st.session_state.additional_input else '없음'}
+        [1차 SOAP 요약]: {st.session_state.soap_result}
+        [추가 문진 정보]: {st.session_state.additional_input}
         
         **작성 가이드**:
         1. 추천 혈자리: '이름(코드) [이미지: URL]' 형식 유지.
-        2. **선택 이유 (필수)**: 각 혈자리를 선택한 이유를 육기 이론과 환자 증상을 연결하여 상세히 설명하세요. 
-           (예: "환자는 어제부터 당기는 근육통을 호소하는데 이 증상은 궐음풍목에 속하며, 어제 발생한 급성 증상이므로 락(Luo)에 해당합니다. 따라서 궐음락인 내관-여구를 선택하여 근육 압력을 해소합니다.")
-        3. 요약된 SOAP 차트도 포함하세요.
+        2. **선택 이유 (필수)**: 각 혈자리를 선택한 이유를 육기 이론(궐음, 소양 등)과 환자의 구체적 증상을 연결하여 상세히 설명하세요.
+        3. 최종 완성된 SOAP 차트를 포함하세요.
         """
         try:
             final_result = analyze_with_hybrid_fallback(FINAL_PROMPT)
