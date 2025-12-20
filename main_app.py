@@ -155,9 +155,15 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 # --- 4. API 클라이언트 설정 ---
+# Gemini API 키 가져오기 로직 강화
 api_keys = []
 if "GEMINI_API_KEYS" in st.secrets:
-    api_keys = st.secrets["GEMINI_API_KEYS"]
+    # 리스트 형태인 경우와 쉼표로 구분된 문자열인 경우 모두 처리
+    raw_keys = st.secrets["GEMINI_API_KEYS"]
+    if isinstance(raw_keys, list):
+        api_keys = raw_keys
+    else:
+        api_keys = [k.strip() for k in str(raw_keys).split(",") if k.strip()]
 elif "GEMINI_API_KEY" in st.secrets:
     api_keys = [st.secrets["GEMINI_API_KEY"]]
 
@@ -175,26 +181,33 @@ except:
 
 # --- 5. 분석 엔진 ---
 def analyze_with_hybrid_fallback(prompt, system_instruction="당신은 노련한 한의사 보조 AI입니다."):
+    # 1순위: Gemini 시도
     gemini_models = ['gemini-2.0-flash-exp', 'gemini-1.5-flash']
     
-    for api_key in api_keys:
-        try:
-            client = genai.Client(api_key=api_key)
-            for model in gemini_models:
-                try:
-                    response = client.models.generate_content(
-                        model=model, 
-                        contents=prompt,
-                        config={'system_instruction': system_instruction}
-                    )
-                    if response and response.text:
-                        st.session_state.current_model = f"{model} (Key-Active)"
-                        return response.text
-                except Exception:
-                    continue
-        except Exception:
-            continue
+    if not api_keys:
+        st.warning("⚠️ 등록된 Gemini API 키가 없습니다. Fallback 모델로 전환합니다.")
+    else:
+        for api_key in api_keys:
+            try:
+                client = genai.Client(api_key=api_key)
+                for model_id in gemini_models:
+                    try:
+                        response = client.models.generate_content(
+                            model=model_id, 
+                            contents=prompt,
+                            config={'system_instruction': system_instruction}
+                        )
+                        if response and response.text:
+                            st.session_state.current_model = f"{model_id} (Active)"
+                            return response.text
+                    except Exception as e:
+                        # 특정 모델 에러 시 다음 모델로 시도
+                        continue
+            except Exception as e:
+                # 특정 키 에러 시 다음 키로 시도
+                continue
             
+    # 2순위: Groq (Fallback)
     if groq_client:
         try:
             model_name = "llama-3.3-70b-versatile"
@@ -206,12 +219,12 @@ def analyze_with_hybrid_fallback(prompt, system_instruction="당신은 노련한
                 model=model_name,
                 temperature=0.2,
             )
-            st.session_state.current_model = f"{model_name} (Fallback)"
+            st.session_state.current_model = f"{model_name} (Fallback-Emergency)"
             return chat_completion.choices[0].message.content
         except Exception as e:
             st.error(f"Groq 호출 실패: {e}")
     
-    raise Exception("모든 API 키와 모델 호출에 실패했습니다.")
+    raise Exception("모든 API 키와 모델 호출에 실패했습니다. API 키 유효성 및 네트워크를 확인하세요.")
 
 def clean_newlines(text):
     if not text: return ""
