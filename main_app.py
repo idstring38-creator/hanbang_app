@@ -198,14 +198,13 @@ def analyze_with_hybrid_fallback(prompt, system_instruction="당신은 노련한
     if groq_client:
         try:
             model_name = "llama-3.3-70b-versatile"
-            # Groq 사용 시 추론 능력 보완을 위해 System Message를 강화된 형태로 전달
             chat_completion = groq_client.chat.completions.create(
                 messages=[
                     {"role": "system", "content": f"{system_instruction}\n당신은 제공된 DB를 엄격히 준수하며, 논리적이고 세밀한 한의학적 분석을 수행해야 합니다. 출력 형식을 절대로 생략하지 마세요."},
                     {"role": "user", "content": prompt}
                 ],
                 model=model_name,
-                temperature=0.2, # 온도를 낮춰 더 결정론적이고 논리적인 답변 유도
+                temperature=0.2,
             )
             st.session_state.current_model = f"{model_name} (Fallback)"
             return chat_completion.choices[0].message.content
@@ -242,10 +241,10 @@ if st.session_state.step == "input":
                     다음 대화 원문을 바탕으로 '문진 단계'를 수행하세요.
                     
                     **출력 형식 필수 지침**:
-                    1. [SOAP 요약]: 환자의 증상을 SOAP 형식으로 요약.
+                    1. [SOAP 요약]: 환자의 증상을 SOAP 형식으로 요약. 입력되지 않은 정보는 절대 상상해서 적지 마세요.
                     2. [추가 확인 사항]: 육기 진단을 위해 필요한 질문을 번호를 매겨 작성. (예: 1. 질문내용)
                     
-                    **주의**: '추가 확인 사항' 섹션에는 오직 질문 리스트만 포함하세요. 도입부 문구(예: "다음은 질문입니다")는 생략하세요.
+                    **주의**: '추가 확인 사항' 섹션에는 도입부 없이 질문 리스트만 포함하세요.
                     
                     [대화 원문]: {raw_text}
                     """
@@ -256,7 +255,6 @@ if st.session_state.step == "input":
                             parts = result.split("[추가 확인 사항]")
                             st.session_state.soap_result = clean_newlines(parts[0].replace("[SOAP 요약]", "").strip())
                             questions_raw = parts[1].strip()
-                            # 정규식 개선: 숫자 뒤에 마침표와 공백이 있는 패턴만 추출하고 빈 항목 제거
                             q_list = re.split(r'\n?\d+\.\s*', questions_raw)
                             st.session_state.follow_up_questions = [q.strip() for q in q_list if len(q.strip()) > 5]
                         else:
@@ -305,29 +303,48 @@ elif st.session_state.step == "result":
         with st.spinner("최종 치료 계획을 수립 중..."):
             FINAL_PROMPT = f"""
             [치료 DB]: {treatment_db_content}
+            [환자 정보]: {st.session_state.raw_text}
             [1차 SOAP 요약]: {st.session_state.soap_result}
             [추가 답변 정보]: {st.session_state.additional_input}
             
-            위 정보를 바탕으로 원락극 처방과 상세 분석을 작성하세요.
+            위 정보를 바탕으로 한의사 원장님을 위한 최종 진단 및 치료 계획을 수립하세요.
             
-            **필수 준수 사항**:
-            1. 모든 혈자리에 대해 '혈자리명(코드) / 취혈방향 [이미지: URL]' 형식을 절대로 누락하지 마세요.
-            2. 취혈 방향은 DB에 따라 '동측(환측)' 혹은 '대측(건측)'으로 명확히 기재하세요.
-            
-            출력 예시:
-            양로(SI6) / 대측 [이미지: https://www.medicine.com/acupoint/si6.jpg]
+            **반드시 다음 순서와 지침을 엄격히 준수하여 출력하세요**:
+
+            1. **[질환 분석]**: 
+               - 양방질환명과 한방질환명을 가장 먼저 제시하세요.
+               - 왜 그렇게 추론했는지 환자의 증상과 육기(六氣)적 관점에서 최대한 자세히 서술하세요.
+
+            2. **[상세 SOAP 차트]**:
+               - 차트에 그대로 복사해 붙여넣을 수 있도록 상세하게 작성하세요.
+               - 단, 환자가 말하지 않은 허위 정보(예: 맥진 결과, 설진 결과 등 확인 안 된 것)는 절대 적지 마세요.
+
+            3. **[원인 분석]**: 
+               - 환자의 현재 상태를 유발한 근본 원인을 증상과 추가 정보를 통합하여 논리적으로 서술하세요.
+
+            4. **[처방]**:
+               - DB에 기반한 원락극 혈자리 처방을 제시하세요.
+               - 혈자리 이름과 코드를 명확히 표기하세요. (예: 양로(SI6))
+               - **취혈 방향(동측/대측)**과 **그 이유**를 이 섹션에 통합하여 간략히 설명하세요.
+               - 형식: '혈자리명(코드) / 취혈방향 [이미지: URL] - 이유: 설명'
+
+            5. **[생활 지도]**:
+               - 현재 환자에게 필요한 일반적이고 보편적인 생활 습관 교정 및 지도 사안을 출력하세요.
+
+            **출력 예시**:
+            양로(SI6) / 대측 [이미지: https://...] - 이유: 태양한수의 극혈로서 급성 인대 손상을 제어하기 위해 대측을 취혈합니다.
             """
             st.session_state.final_plan = analyze_with_hybrid_fallback(FINAL_PROMPT)
 
     st.markdown('<div class="stCard">', unsafe_allow_html=True)
     st.markdown(f'<div class="model-tag">🤖 최종 분석 모델: {st.session_state.current_model}</div>', unsafe_allow_html=True)
-    st.subheader("💡 최종 추천 치료 및 처방")
+    st.subheader("💡 최종 진단 및 치료 계획")
     
-    # 이미지 정보를 제외한 텍스트 본문 출력
+    # 이미지 정보를 제외한 본문 출력
     display_text = re.sub(r'\S+\s*/\s*\S+\s*\[이미지:\s*https?:\/\/[^\s\]]+\]', '', st.session_state.final_plan)
     st.markdown(display_text)
     
-    # 혈자리 이미지 및 취혈 방향 렌더링 (더 엄격한 패턴 매칭)
+    # 혈자리 이미지 및 취혈 방향 렌더링
     img_patterns = re.findall(r'([^\s\[]+(?:\s*/\s*[^\s\[]+)?)\s*\[이미지:\s*(https?:\/\/[^\s\]]+)\]', st.session_state.final_plan)
     if img_patterns:
         st.divider()
@@ -337,8 +354,6 @@ elif st.session_state.step == "result":
             with cols[idx % 2]:
                 st.image(url.strip(), use_container_width=True)
                 st.markdown(f'<div class="acu-caption">{label}</div>', unsafe_allow_html=True)
-    else:
-        st.warning("⚠️ 혈자리 이미지 정보를 파싱하지 못했습니다. 텍스트 본문을 확인해 주세요.")
 
     st.divider()
     
