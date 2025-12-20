@@ -147,14 +147,14 @@ st.markdown("""
     .acu-caption {
         font-size: 1.1rem !important;
         font-weight: 700 !important;
-        color: #0f172a !important; /* 진한 검은색 */
+        color: #0f172a !important; 
         text-align: center;
         margin-top: 5px;
     }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 4. API 클라이언트 설정 (멀티 키 로직) ---
+# --- 4. API 클라이언트 설정 ---
 api_keys = []
 if "GEMINI_API_KEYS" in st.secrets:
     api_keys = st.secrets["GEMINI_API_KEYS"]
@@ -174,7 +174,7 @@ except:
     st.stop()
 
 # --- 5. 분석 엔진 ---
-def analyze_with_hybrid_fallback(prompt):
+def analyze_with_hybrid_fallback(prompt, system_instruction="당신은 노련한 한의사 보조 AI입니다."):
     gemini_models = ['gemini-2.0-flash-exp', 'gemini-1.5-flash']
     
     for api_key in api_keys:
@@ -182,7 +182,11 @@ def analyze_with_hybrid_fallback(prompt):
             client = genai.Client(api_key=api_key)
             for model in gemini_models:
                 try:
-                    response = client.models.generate_content(model=model, contents=prompt)
+                    response = client.models.generate_content(
+                        model=model, 
+                        contents=prompt,
+                        config={'system_instruction': system_instruction}
+                    )
                     if response and response.text:
                         st.session_state.current_model = f"{model} (Key-Active)"
                         return response.text
@@ -194,10 +198,14 @@ def analyze_with_hybrid_fallback(prompt):
     if groq_client:
         try:
             model_name = "llama-3.3-70b-versatile"
+            # Groq 사용 시 추론 능력 보완을 위해 System Message를 강화된 형태로 전달
             chat_completion = groq_client.chat.completions.create(
-                messages=[{"role": "user", "content": prompt}],
+                messages=[
+                    {"role": "system", "content": f"{system_instruction}\n당신은 제공된 DB를 엄격히 준수하며, 논리적이고 세밀한 한의학적 분석을 수행해야 합니다. 출력 형식을 절대로 생략하지 마세요."},
+                    {"role": "user", "content": prompt}
+                ],
                 model=model_name,
-                temperature=0.3,
+                temperature=0.2, # 온도를 낮춰 더 결정론적이고 논리적인 답변 유도
             )
             st.session_state.current_model = f"{model_name} (Fallback)"
             return chat_completion.choices[0].message.content
@@ -231,11 +239,13 @@ if st.session_state.step == "input":
             if raw_text:
                 with st.spinner("증상을 분석 중입니다..."):
                     FIRST_PROMPT = f"""
-                    당신은 노련한 한의사 보조 AI입니다. 다음 대화 원문을 바탕으로 '문진 단계'를 수행하세요.
+                    다음 대화 원문을 바탕으로 '문진 단계'를 수행하세요.
                     
-                    **답변 지침**:
-                    1. [SOAP 요약]: 환자의 핵심 증상과 상태를 SOAP 형식으로 요약하세요. 간결하게 작성하세요.
-                    2. [추가 확인 사항]: 육기 진단을 위해 원장님이 물어봐야 할 질문들을 번호를 붙여 나열하세요.
+                    **출력 형식 필수 지침**:
+                    1. [SOAP 요약]: 환자의 증상을 SOAP 형식으로 요약.
+                    2. [추가 확인 사항]: 육기 진단을 위해 필요한 질문을 번호를 매겨 작성. (예: 1. 질문내용)
+                    
+                    **주의**: '추가 확인 사항' 섹션에는 오직 질문 리스트만 포함하세요. 도입부 문구(예: "다음은 질문입니다")는 생략하세요.
                     
                     [대화 원문]: {raw_text}
                     """
@@ -246,8 +256,9 @@ if st.session_state.step == "input":
                             parts = result.split("[추가 확인 사항]")
                             st.session_state.soap_result = clean_newlines(parts[0].replace("[SOAP 요약]", "").strip())
                             questions_raw = parts[1].strip()
-                            q_list = re.split(r'\d+\.', questions_raw)
-                            st.session_state.follow_up_questions = [q.strip() for q in q_list if q.strip()]
+                            # 정규식 개선: 숫자 뒤에 마침표와 공백이 있는 패턴만 추출하고 빈 항목 제거
+                            q_list = re.split(r'\n?\d+\.\s*', questions_raw)
+                            st.session_state.follow_up_questions = [q.strip() for q in q_list if len(q.strip()) > 5]
                         else:
                             st.session_state.soap_result = clean_newlines(result.replace("[SOAP 요약]", "").strip())
                             st.session_state.follow_up_questions = []
@@ -293,19 +304,18 @@ elif st.session_state.step == "result":
     if not st.session_state.final_plan:
         with st.spinner("최종 치료 계획을 수립 중..."):
             FINAL_PROMPT = f"""
-            당신은 한의사 보조 AI입니다.
-            
             [치료 DB]: {treatment_db_content}
             [1차 SOAP 요약]: {st.session_state.soap_result}
             [추가 답변 정보]: {st.session_state.additional_input}
             
-            위 정보를 바탕으로 원락극 처방(측성 포함)과 상세 분석을 작성하세요.
+            위 정보를 바탕으로 원락극 처방과 상세 분석을 작성하세요.
             
-            **중요 지침**:
-            치료 DB의 정보에 따라 각 혈자리가 '동측(환측)'인지 '대측(건측)'인지 명확히 구별하여 작성하세요.
-            마지막 혈자리 정보는 반드시 아래 형식을 지키세요:
-            혈자리명(코드) / 취혈방향 [이미지: URL]
-            (예: 양로(SI6) / 대측 [이미지: https://...])
+            **필수 준수 사항**:
+            1. 모든 혈자리에 대해 '혈자리명(코드) / 취혈방향 [이미지: URL]' 형식을 절대로 누락하지 마세요.
+            2. 취혈 방향은 DB에 따라 '동측(환측)' 혹은 '대측(건측)'으로 명확히 기재하세요.
+            
+            출력 예시:
+            양로(SI6) / 대측 [이미지: https://www.medicine.com/acupoint/si6.jpg]
             """
             st.session_state.final_plan = analyze_with_hybrid_fallback(FINAL_PROMPT)
 
@@ -313,12 +323,12 @@ elif st.session_state.step == "result":
     st.markdown(f'<div class="model-tag">🤖 최종 분석 모델: {st.session_state.current_model}</div>', unsafe_allow_html=True)
     st.subheader("💡 최종 추천 치료 및 처방")
     
-    # 텍스트만 추출하여 출력
+    # 이미지 정보를 제외한 텍스트 본문 출력
     display_text = re.sub(r'\S+\s*/\s*\S+\s*\[이미지:\s*https?:\/\/[^\s\]]+\]', '', st.session_state.final_plan)
     st.markdown(display_text)
     
-    # 혈자리 이미지 및 취혈 방향 렌더링
-    img_patterns = re.findall(r'(\S+\s*/\s*\S+)\s*\[이미지:\s*(https?:\/\/[^\s\]]+)\]', st.session_state.final_plan)
+    # 혈자리 이미지 및 취혈 방향 렌더링 (더 엄격한 패턴 매칭)
+    img_patterns = re.findall(r'([^\s\[]+(?:\s*/\s*[^\s\[]+)?)\s*\[이미지:\s*(https?:\/\/[^\s\]]+)\]', st.session_state.final_plan)
     if img_patterns:
         st.divider()
         st.markdown("##### 🖼️ 혈자리 가이드")
@@ -327,6 +337,8 @@ elif st.session_state.step == "result":
             with cols[idx % 2]:
                 st.image(url.strip(), use_container_width=True)
                 st.markdown(f'<div class="acu-caption">{label}</div>', unsafe_allow_html=True)
+    else:
+        st.warning("⚠️ 혈자리 이미지 정보를 파싱하지 못했습니다. 텍스트 본문을 확인해 주세요.")
 
     st.divider()
     
@@ -335,7 +347,7 @@ elif st.session_state.step == "result":
         if st.button("📲 모바일 시트 전송", type="primary"):
             with st.spinner("시트 저장 중..."):
                 if save_to_google_sheets(st.session_state.final_plan):
-                    st.success("전송 완료! 이미지 링크가 포함되었습니다.")
+                    st.success("전송 완료!")
     
     with col_next:
         if st.button("🔄 다음 환자 진료"):
