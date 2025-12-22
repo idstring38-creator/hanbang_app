@@ -49,14 +49,26 @@ if shared_id:
         st.rerun()
     st.stop()
 
-# --- 4. 커스텀 CSS ---
+# --- 4. 커스텀 CSS (강조된 제목 및 여백) ---
 st.markdown("""
     <style>
     .stCard { background-color: #ffffff; border-radius: 16px; padding: 25px; border: 1px solid #e2e8f0; margin-bottom: 20px; }
+    
+    /* 항목 제목 스타일: 더 크고, 두껍고, 선명한 파란색 */
     .result-title { 
-        color: #1d4ed8 !important; font-size: 1.6rem !important; font-weight: 800 !important; 
-        border-bottom: 3px solid #1d4ed8; padding-bottom: 8px; margin-top: 35px; margin-bottom: 15px; 
+        color: #0056b3 !important; 
+        font-size: 1.8rem !important; 
+        font-weight: 900 !important; 
+        border-left: 8px solid #0056b3; 
+        padding-left: 15px;
+        margin-top: 50px !important; /* 항목 간 충분한 여백 */
+        margin-bottom: 20px !important;
+        background-color: #f0f7ff;
+        padding-top: 10px;
+        padding-bottom: 10px;
+        border-radius: 4px;
     }
+    
     div.stButton > button {
         background-color: #1d4ed8 !important; color: white !important;
         font-size: 1.3rem !important; font-weight: 800 !important;
@@ -64,8 +76,11 @@ st.markdown("""
         border-radius: 15px !important; border: none !important;
         box-shadow: 0 4px 15px rgba(29, 78, 216, 0.3) !important;
     }
-    div.stButton > button:hover { background-color: #1e40af !important; }
+    
     .q-item { background-color: #f8fafc; padding: 15px; border-radius: 10px; border-left: 5px solid #3b82f6; margin-top: 10px; font-weight: 600; }
+    
+    /* 섹션 간 줄바꿈 효과 */
+    .section-gap { margin-bottom: 40px; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -87,14 +102,14 @@ if st.session_state.step == "input":
     if st.button("✨ 분석 시작 및 문진 생성"):
         if raw_text:
             st.session_state.patient_info = {"name": name, "gender": gender, "birth_year": birth_year}
-            with st.spinner("AI가 정밀 문진을 준비 중입니다..."):
+            with st.spinner("AI가 분석 중입니다..."):
                 genai.configure(api_key=st.secrets["GEMINI_API_KEY"][0])
                 model = genai.GenerativeModel('models/gemini-2.0-flash-exp')
-                PROMPT = f"환자: {name}, 증상: {raw_text}\n[지침]: 변증을 위해 질문 5개 이상 필수 생성. ?로 끝나는 질문 리스트업.\n[추가 확인 사항]: 질문들..."
+                PROMPT = f"환자: {name}, 증상: {raw_text}\n[지침]: 변증을 위해 질문 5개 이상 필수 생성. ?로 끝나는 질문 리스트.\n[추가 확인 사항]: 질문들..."
                 try:
                     res = model.generate_content(PROMPT).text
                     qs = [q.strip() for q in re.split(r'\n|(?<=\?)\s*', res.split("[추가 확인 사항]")[-1]) if '?' in q]
-                    defaults = ["증상 발현 시기는?", "통증의 양상은?", "소화 및 배변은?", "수면 및 컨디션은?", "심해지는 조건은?"]
+                    defaults = ["증상 발생 시기?", "통증 양상?", "소화/배변?", "수면/컨디션?", "악화 조건?"]
                     st.session_state.follow_up_questions = (qs + defaults)[:max(5, len(qs))]
                     st.session_state.raw_text = raw_text
                     st.session_state.step = "verify"
@@ -109,40 +124,30 @@ elif st.session_state.step == "verify":
         st.markdown(f'<div class="q-item">{i+1}. {q}</div>', unsafe_allow_html=True)
         st.session_state.responses[f"q_{i}"] = st.text_input(f"답변 {i+1}", key=f"ans_{i}")
     
-    if st.button("✅ 심층 진단 및 처방 생성"):
+    if st.button("✅ 심층 진단 생성"):
         st.session_state.step = "result"
         st.rerun()
 
 elif st.session_state.step == "result":
     if not st.session_state.final_plan:
-        with st.spinner("최종 진단 및 처방을 구성 중입니다 (약 20초 소요)..."):
+        with st.spinner("최종 진단 리포트를 작성 중입니다..."):
             p = st.session_state.patient_info
             age = calculate_age(p['birth_year'])
             ans_str = "\n".join([f"Q: {q} A: {st.session_state.responses.get(f'q_{i}', '')}" for i, q in enumerate(st.session_state.follow_up_questions)])
-            db_content = st.secrets.get("TREATMENT_DB", "데이터 없음")
+            db_content = st.secrets.get("TREATMENT_DB", "")
             
             FINAL_PROMPT = f"""
             [TREATMENT_DB]: {db_content}
-            [환자 정보]: {p['name']}({p['gender']}, {age}세) / 주소증: {st.session_state.raw_text}
-            [문진 답변]: {ans_str}
+            환자: {p['name']}({p['gender']}, {age}세) / 증상: {st.session_state.raw_text} / 답변: {ans_str}
 
-            [작성 지침 - 엄격 준수]:
-            1. 모든 대제목은 <div class='result-title'>제목명</div>을 사용한다.
-            2. **[환자 정보 요약]**: 이름, 성별, 나이, 주소증을 상단에 고정한다.
-            3. **[차트 정리]**: 법적 방어 문구(소독함, 부작용 설명함, 안정가료 지시함)를 반드시 포함하고, 불필요한 예시 문구(맥진/설진 기록 등)는 제거한다.
-            4. **[변증 및 진단]**: 
-               - **최소 500자 이상의 분량**으로 작성한다.
-               - 입력된 환자 정보와 문진 답변을 근거로 하여 한의학적 변증(한열허실, 장부변증 등)의 근거와 병명 추론 과정을 객관적이고 논리적으로 기술한다.
-               - 한의학 상병명은 반드시 **U코드**를 기준으로 기재한다 (예: 근막통증증후군 U50.11). 양방 KCD 병명도 병기한다.
-               - 응급 상황 판단 결과를 포함한다.
-            5. **[혈자리 처방]**: 
-               - **철저히 [TREATMENT_DB]에 있는 내용만을 사용한다.**
-               - 형식: "(동측/대측) 혈자리명 : 해당 혈자리가 환자의 증상과 어떻게 매칭되는지 [TREATMENT_DB]의 원리를 근거로 상세히 설명".
-               - 혈자리마다 <br> 태그로 줄바꿈한다.
-            6. **[추가 혈자리 권유]**: [TREATMENT_DB]에 없지만 증상 완화에 도움을 줄 수 있는 혈자리가 있다면 이 섹션에 별도로 기재한다.
-            7. **[혈자리 가이드]**: "(동측/대측) 혈자리명 [이미지: URL]" 형식으로 작성한다.
+            [지침]:
+            1. 모든 대제목은 <div class='result-title'>제목명</div>을 사용하며, 제목 뒤에 <div class='section-gap'></div>를 추가해라.
+            2. **[환자 정보 요약]**, **[차트 정리]**, **[변증 및 진단]**, **[혈자리 처방]**, **[추가 혈자리 권유]**, **[혈자리 가이드]** 순서로 작성.
+            3. [차트 정리]에 법적 방어 문구 필수 포함.
+            4. [변증 및 진단]은 500자 이상 심층 기술, U코드 사용.
+            5. [혈자리 처방]은 DB 근거, 혈자리마다 <br> 줄바꿈.
+            6. [혈자리 가이드] 형식: "(동측/대측) 혈자리이름 [이미지: URL]" (이미지 URL은 대괄호 안에 정확히 기재)
             """
-            
             genai.configure(api_key=st.secrets["GEMINI_API_KEY"][0])
             model = genai.GenerativeModel('models/gemini-2.0-flash-exp')
             st.session_state.final_plan = model.generate_content(FINAL_PROMPT).text
@@ -156,31 +161,47 @@ elif st.session_state.step == "result":
     st.markdown('<div class="stCard">', unsafe_allow_html=True)
     st.subheader(f"📋 {st.session_state.patient_info['name']} 최종진단")
     
-    clean_html = st.session_state.final_plan.replace("```html", "").replace("```", "")
-    content_parts = clean_html.split("<div class='result-title'>혈자리 가이드</div>")
+    # --- 출력 로직 보완 ---
+    raw_plan = st.session_state.final_plan.replace("```html", "").replace("```", "")
     
-    # 상단 텍스트 출력
-    st.markdown(content_parts[0], unsafe_allow_html=True)
+    # 1. 혈자리 가이드 분리
+    parts = raw_plan.split("<div class='result-title'>혈자리 가이드</div>")
+    main_content = parts[0]
+    st.markdown(main_content, unsafe_allow_html=True)
 
-    # 혈자리 이미지 가이드 출력
-    if len(content_parts) > 1:
+    if len(parts) > 1:
         st.markdown("<div class='result-title'>혈자리 가이드</div>", unsafe_allow_html=True)
-        img_patterns = re.findall(r'(\((?:동측|대측)\)\s*\S+)\s*\[이미지:\s*(https?:\/\/[^\s\]]+)\]', content_parts[1], re.I)
-        clean_guide_text = re.sub(r'\[이미지:\s*(https?:\/\/[^\s\]]+)\]', '', content_parts[1])
-        st.markdown(clean_guide_text, unsafe_allow_html=True)
+        guide_text = parts[1]
         
+        # 2. 이미지 URL 추출 및 텍스트 정제 (정규표현식 강화)
+        img_patterns = re.findall(r'(\((?:동측|대측)\)\s*[가-힣0-9a-zA-Z\s]+)\s*\[이미지:\s*(https?://[^\s\]]+)\]', guide_text)
+        
+        # 이미지 태그를 제거한 순수 텍스트 먼저 출력
+        clean_text = re.sub(r'\[이미지:\s*https?://[^\s\]]+\]', '', guide_text)
+        st.markdown(clean_text, unsafe_allow_html=True)
+        
+        # 3. 추출된 이미지 실제 렌더링
         if img_patterns:
-            st.divider()
+            st.write("---")
             cols = st.columns(2)
             for idx, (label, url) in enumerate(img_patterns):
                 with cols[idx % 2]:
                     st.image(url.strip(), use_container_width=True)
-                    st.markdown(f"<div style='text-align:center; font-weight:bold; color:#1d4ed8;'>{label}</div>", unsafe_allow_html=True)
+                    st.markdown(f"<div style='text-align:center; font-weight:bold; color:#0056b3;'>{label}</div>", unsafe_allow_html=True)
 
+    # 4. 환자 공유 주소 및 복사 버튼
     if st.session_state.shared_link:
-        st.info(f"🔗 환자 공유 주소: {st.session_state.shared_link}")
+        st.divider()
+        st.markdown("### 🔗 환자용 공유 주소")
+        col_link, col_copy = st.columns([4, 1])
+        with col_link:
+            st.text_input("공유 링크", st.session_state.shared_link, label_visibility="collapsed")
+        with col_copy:
+            # st.code는 내장 복사 버튼을 제공하므로 가장 효율적
+            st.code(st.session_state.shared_link, language=None)
+            st.caption("위 박스 우측 버튼을 클릭하여 복사")
 
-    if st.button("🔄 다음 환자 진료"):
+    if st.button("🔄 다음 환자 진료 시작"):
         for key in list(st.session_state.keys()): del st.session_state[key]
         st.rerun()
     st.markdown('</div>', unsafe_allow_html=True)
