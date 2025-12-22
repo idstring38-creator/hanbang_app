@@ -111,7 +111,8 @@ except:
 
 # --- 5. 분석 엔진 (에러 확인용 버전) ---
 def analyze_with_hybrid_fallback(prompt, system_instruction="당신은 노련한 한의사 보조 AI입니다."):
-    gemini_models = ['gemini-2.0-flash-exp', 'gemini-1.5-flash']
+    # 순서를 1.5-flash(안정 버전)가 먼저 오게 바꿨습니다.
+    gemini_models = ['gemini-1.5-flash', 'gemini-2.0-flash-exp']
     
     for api_key in api_keys:
         try:
@@ -235,5 +236,6 @@ with st.sidebar:
     if st.button("🏠 홈으로 (초기화)"):
         clear_form()
         st.rerun()
+
 
 
