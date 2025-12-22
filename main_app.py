@@ -109,11 +109,9 @@ except:
     st.error("⚠️ TREATMENT_DB 설정이 필요합니다.")
     st.stop()
 
-# --- 5. 분석 엔진 (수정됨) ---
+# --- 5. 분석 엔진 (에러 확인용 버전) ---
 def analyze_with_hybrid_fallback(prompt, system_instruction="당신은 노련한 한의사 보조 AI입니다."):
-    # 1. Gemini 시도
-    # 최신 모델인 2.0 flash를 먼저 시도하고 안되면 1.5 flash 시도
-    gemini_models = ['gemini-2.0-flash-exp', 'gemini-1.5-flash']
+    gemini_models = ['gemini-1.5-flash', 'gemini-2.0-flash-exp']
     
     for api_key in api_keys:
         try:
@@ -128,18 +126,21 @@ def analyze_with_hybrid_fallback(prompt, system_instruction="당신은 노련한
                     if response and response.text:
                         st.session_state.current_model = f"{model_name} (Google)"
                         return response.text
-                except Exception:
+                except Exception as e:
+                    # ⭐ 이 부분이 핵심입니다! 에러가 나면 화면에 노란 박스로 이유를 보여줍니다.
+                    st.warning(f"Gemini 모델({model_name}) 실행 중 에러: {e}")
                     continue
-        except Exception:
+        except Exception as e:
+            st.warning(f"API 키 설정 중 에러: {e}")
             continue
             
-    # 2. Gemini 모두 실패 시 Groq 실행 (Fallback)
     if groq_client:
+        # (중략) Groq 실행 코드 부분...
         try:
             model_name = "llama-3.3-70b-versatile"
             chat_completion = groq_client.chat.completions.create(
                 messages=[
-                    {"role": "system", "content": f"{system_instruction}\n당신은 제공된 DB를 엄격히 준수하며, 논리적이고 세밀한 한의학적 분석을 수행해야 합니다. 출력 형식을 절대로 생략하지 마세요."},
+                    {"role": "system", "content": f"{system_instruction}\n당신은 제공된 DB를 엄격히 준수하며..."},
                     {"role": "user", "content": prompt}
                 ],
                 model=model_name,
@@ -150,8 +151,6 @@ def analyze_with_hybrid_fallback(prompt, system_instruction="당신은 노련한
         except Exception as e:
             st.error(f"Groq 호출 실패: {e}")
     
-    raise Exception("모든 API 호출에 실패했습니다.")
-
 def clean_newlines(text):
     if not text: return ""
     return re.sub(r'\n{3,}', '\n\n', text).strip()
@@ -233,3 +232,4 @@ with st.sidebar:
     if st.button("🏠 홈으로 (초기화)"):
         clear_form()
         st.rerun()
+
