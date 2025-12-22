@@ -1,5 +1,5 @@
 import streamlit as st
-import google.generativeai as genai  # 표준 라이브러리로 변경
+import google.generativeai as genai 
 import re
 import datetime
 import time
@@ -15,7 +15,6 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# 세션 상태 초기화
 if 'patient_count' not in st.session_state:
     st.session_state.patient_count = 1
 if 'current_time' not in st.session_state:
@@ -52,19 +51,10 @@ def save_to_google_sheets(content):
         scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
         creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scope)
         client = gspread.authorize(creds)
-        
         sheet = client.open_by_key(st.secrets["spreadsheet_id"]).sheet1
-        
         sheet_ready_content = re.sub(r'\[이미지:\s*(https?://[^\s\]]+)\]', r'\n(이미지 확인: \1)', content)
-        
         now = datetime.datetime.now()
-        row = [
-            now.strftime("%Y-%m-%d"),
-            now.strftime("%H:%M:%S"),
-            st.session_state.patient_count,
-            st.session_state.soap_result[:150], 
-            sheet_ready_content 
-        ]
+        row = [now.strftime("%Y-%m-%d"), now.strftime("%H:%M:%S"), st.session_state.patient_count, st.session_state.soap_result[:150], sheet_ready_content]
         sheet.append_row(row)
         return True
     except Exception as e:
@@ -80,22 +70,17 @@ st.markdown("""
     .main-header { text-align: center; margin-bottom: 20px; }
     .soap-box { background-color: #f1f5f9; border-left: 5px solid #3b82f6; padding: 12px; border-radius: 8px; margin-bottom: 15px; white-space: pre-wrap; font-size: 0.92rem; line-height: 1.4; }
     .stButton>button { width: 100%; border-radius: 16px; height: 3.5em; background-color: #2563eb; color: white !important; font-weight: 800; border: none; box-shadow: 0 4px 10px rgba(37, 99, 235, 0.2); }
-    .verify-btn>button { background-color: #059669 !important; box-shadow: 0 4px 10px rgba(5, 150, 105, 0.2) !important; }
     .q-item { background-color: #fffbeb; border: 1px solid #fde68a; padding: 12px; border-radius: 10px; color: #92400e; margin-top: 10px; font-size: 0.95rem; font-weight: 500; }
     .model-tag { font-size: 0.75rem; color: #64748b; background: #f1f5f9; padding: 2px 8px; border-radius: 4px; margin-bottom: 8px; display: inline-block; }
     .acu-caption { font-size: 1.1rem !important; font-weight: 700 !important; color: #0f172a !important; text-align: center; margin-top: 5px; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 4. API 클라이언트 설정 (수정됨) ---
+# --- 4. API 클라이언트 설정 ---
 api_keys = []
 if "GEMINI_API_KEY" in st.secrets:
     raw_keys = st.secrets["GEMINI_API_KEY"]
-    # Secrets가 리스트면 그대로 사용, 문자열이면 리스트로 변환 (이중 리스트 방지)
-    if isinstance(raw_keys, list):
-        api_keys = raw_keys
-    else:
-        api_keys = [raw_keys]
+    api_keys = raw_keys if isinstance(raw_keys, list) else [raw_keys]
 
 groq_client = None
 try:
@@ -103,48 +88,35 @@ try:
 except:
     pass
 
-try:
-    treatment_db_content = st.secrets["TREATMENT_DB"]
-except:
-    st.error("⚠️ TREATMENT_DB 설정이 필요합니다.")
-    st.stop()
+treatment_db_content = st.secrets.get("TREATMENT_DB", "DB 정보가 없습니다.")
 
-# --- 5. 분석 엔진 (에러 확인용 버전) ---
+# --- 5. 분석 엔진 (정상 복구 버전) ---
 def analyze_with_hybrid_fallback(prompt, system_instruction="당신은 노련한 한의사 보조 AI입니다."):
-    # 순서를 1.5-flash(안정 버전)가 먼저 오게 바꿨습니다.
-    gemini_models = ['gemini-1.5-flash', 'gemini-2.0-flash-exp']
+    # 1. Gemini 시도 (최신 모델 우선)
+    gemini_models = ['gemini-2.0-flash-exp', 'gemini-1.5-flash']
     
     for api_key in api_keys:
         try:
             genai.configure(api_key=api_key)
             for model_name in gemini_models:
                 try:
-                    model = genai.GenerativeModel(
-                        model_name=model_name,
-                        system_instruction=system_instruction
-                    )
+                    model = genai.GenerativeModel(model_name=model_name, system_instruction=system_instruction)
                     response = model.generate_content(prompt)
                     if response and response.text:
                         st.session_state.current_model = f"{model_name} (Google)"
                         return response.text
-                except Exception as e:
-                    # 에러 메시지를 빨간 박스로 출력하고 멈춥니다.
-                    st.error(f"❌ Gemini 에러 발생 ({model_name}): {e}")
-                    st.info("위 에러 메시지를 확인하신 후 알려주세요. 분석을 중단합니다.")
-                    st.stop() # 다음 페이지로 넘어가지 않도록 강제 정지
-        except Exception as e:
-            st.error(f"❌ API 키 설정 에러: {e}")
-            st.stop()
+                except:
+                    continue
+        except:
+            continue
             
-    # 에러가 없다면 아래 Groq 코드가 실행되겠지만, 
-    # 지금은 위에서 st.stop() 때문에 에러 발생 시 여기서 멈출 겁니다.
+    # 2. Gemini 실패 시 Groq 실행
     if groq_client:
-        # (중략) Groq 실행 코드 부분...
         try:
             model_name = "llama-3.3-70b-versatile"
             chat_completion = groq_client.chat.completions.create(
                 messages=[
-                    {"role": "system", "content": f"{system_instruction}\n당신은 제공된 DB를 엄격히 준수하며..."},
+                    {"role": "system", "content": f"{system_instruction}\n당신은 제공된 DB를 엄격히 준수합니다."},
                     {"role": "user", "content": prompt}
                 ],
                 model=model_name,
@@ -153,13 +125,14 @@ def analyze_with_hybrid_fallback(prompt, system_instruction="당신은 노련한
             st.session_state.current_model = f"{model_name} (Groq)"
             return chat_completion.choices[0].message.content
         except Exception as e:
-            st.error(f"Groq 호출 실패: {e}")
+            st.error(f"모든 AI 호출 실패: {e}")
     
-def clean_newlines(text):
-    if not text: return ""
-    return re.sub(r'\n{3,}', '\n\n', text).strip()
+    raise Exception("분석 모델을 호출할 수 없습니다.")
 
-# --- 6. UI 및 로직 ---
+def clean_newlines(text):
+    return re.sub(r'\n{3,}', '\n\n', text).strip() if text else ""
+
+# --- 6. UI 로직 ---
 st.markdown('<div class="main-header">', unsafe_allow_html=True)
 st.title("🩺 한방 임상 보조 시스템")
 st.write(f"현재 환자: **#{st.session_state.patient_count}**")
@@ -172,22 +145,19 @@ if st.session_state.step == "input":
         raw_text = st.text_area("증상을 입력하세요", key='raw_text_input', height=200, label_visibility="collapsed")
         if st.button("✨ 1차 분석 및 문진 확인"):
             if raw_text:
-                with st.spinner("증상을 분석 중입니다..."):
+                with st.spinner("Gemini가 증상을 분석 중입니다..."):
                     FIRST_PROMPT = f"다음 대화 원문을 바탕으로 '문진 단계'를 수행하세요.\n\n**출력 형식 필수 지침**:\n1. [SOAP 요약]: 요약\n2. [추가 확인 사항]: 질문 리스트\n\n[대화 원문]: {raw_text}"
-                    try:
-                        result = analyze_with_hybrid_fallback(FIRST_PROMPT)
-                        if "[추가 확인 사항]" in result:
-                            parts = result.split("[추가 확인 사항]")
-                            st.session_state.soap_result = clean_newlines(parts[0].replace("[SOAP 요약]", "").strip())
-                            q_list = re.split(r'\n?\d+\.\s*', parts[1].strip())
-                            st.session_state.follow_up_questions = [q.strip() for q in q_list if len(q.strip()) > 5]
-                        else:
-                            st.session_state.soap_result = clean_newlines(result.replace("[SOAP 요약]", "").strip())
-                        st.session_state.raw_text = raw_text
-                        st.session_state.step = "verify"
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"분석 중 오류 발생: {e}")
+                    result = analyze_with_hybrid_fallback(FIRST_PROMPT)
+                    if "[추가 확인 사항]" in result:
+                        parts = result.split("[추가 확인 사항]")
+                        st.session_state.soap_result = clean_newlines(parts[0].replace("[SOAP 요약]", "").strip())
+                        q_list = re.split(r'\n?\d+\.\s*', parts[1].strip())
+                        st.session_state.follow_up_questions = [q.strip() for q in q_list if len(q.strip()) > 5]
+                    else:
+                        st.session_state.soap_result = clean_newlines(result.replace("[SOAP 요약]", "").strip())
+                    st.session_state.raw_text = raw_text
+                    st.session_state.step = "verify"
+                    st.rerun()
         st.markdown('</div>', unsafe_allow_html=True)
 
 elif st.session_state.step == "verify":
@@ -208,7 +178,7 @@ elif st.session_state.step == "verify":
 
 elif st.session_state.step == "result":
     if not st.session_state.final_plan:
-        with st.spinner("최종 치료 계획 수립 중..."):
+        with st.spinner("Gemini가 최종 치료 계획을 수립 중..."):
             FINAL_PROMPT = f"[치료 DB]: {treatment_db_content}\n[1차 요약]: {st.session_state.soap_result}\n[추가 답변]: {st.session_state.additional_input}\n최종 진단 및 처방을 수립하세요."
             st.session_state.final_plan = analyze_with_hybrid_fallback(FINAL_PROMPT)
 
@@ -236,6 +206,3 @@ with st.sidebar:
     if st.button("🏠 홈으로 (초기화)"):
         clear_form()
         st.rerun()
-
-
-
