@@ -111,7 +111,7 @@ except:
 
 # --- 5. 분석 엔진 (에러 확인용 버전) ---
 def analyze_with_hybrid_fallback(prompt, system_instruction="당신은 노련한 한의사 보조 AI입니다."):
-    gemini_models = ['gemini-1.5-flash', 'gemini-2.0-flash-exp']
+    gemini_models = ['gemini-2.0-flash-exp', 'gemini-1.5-flash']
     
     for api_key in api_keys:
         try:
@@ -127,13 +127,16 @@ def analyze_with_hybrid_fallback(prompt, system_instruction="당신은 노련한
                         st.session_state.current_model = f"{model_name} (Google)"
                         return response.text
                 except Exception as e:
-                    # ⭐ 이 부분이 핵심입니다! 에러가 나면 화면에 노란 박스로 이유를 보여줍니다.
-                    st.warning(f"Gemini 모델({model_name}) 실행 중 에러: {e}")
-                    continue
+                    # 에러 메시지를 빨간 박스로 출력하고 멈춥니다.
+                    st.error(f"❌ Gemini 에러 발생 ({model_name}): {e}")
+                    st.info("위 에러 메시지를 확인하신 후 알려주세요. 분석을 중단합니다.")
+                    st.stop() # 다음 페이지로 넘어가지 않도록 강제 정지
         except Exception as e:
-            st.warning(f"API 키 설정 중 에러: {e}")
-            continue
+            st.error(f"❌ API 키 설정 에러: {e}")
+            st.stop()
             
+    # 에러가 없다면 아래 Groq 코드가 실행되겠지만, 
+    # 지금은 위에서 st.stop() 때문에 에러 발생 시 여기서 멈출 겁니다.
     if groq_client:
         # (중략) Groq 실행 코드 부분...
         try:
@@ -232,4 +235,5 @@ with st.sidebar:
     if st.button("🏠 홈으로 (초기화)"):
         clear_form()
         st.rerun()
+
 
