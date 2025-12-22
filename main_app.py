@@ -1,5 +1,5 @@
 import streamlit as st
-from google import genai
+import google.generativeai as genai  # 라이브러리 호출 방식 변경
 import re
 import datetime
 import time
@@ -154,12 +154,17 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 4. API 클라이언트 설정 ---
+# --- 4. API 클라이언트 설정 (수정됨) ---
 api_keys = []
-if "GEMINI_API_KEYS" in st.secrets:
+# GEMINI_API_KEY가 리스트인지 문자열인지 확인하여 처리
+if "GEMINI_API_KEY" in st.secrets:
+    secret_val = st.secrets["GEMINI_API_KEY"]
+    if isinstance(secret_val, list):
+        api_keys = secret_val
+    else:
+        api_keys = [secret_val]
+elif "GEMINI_API_KEYS" in st.secrets: # 예비용
     api_keys = st.secrets["GEMINI_API_KEYS"]
-elif "GEMINI_API_KEY" in st.secrets:
-    api_keys = [st.secrets["GEMINI_API_KEY"]]
 
 groq_client = None
 try:
@@ -173,28 +178,35 @@ except:
     st.error("⚠️ TREATMENT_DB 설정이 필요합니다.")
     st.stop()
 
-# --- 5. 분석 엔진 ---
+# --- 5. 분석 엔진 (수정됨) ---
 def analyze_with_hybrid_fallback(prompt, system_instruction="당신은 노련한 한의사 보조 AI입니다."):
-    gemini_models = ['gemini-2.0-flash-exp', 'gemini-1.5-flash']
+    # 1순위: Gemini 시도 (키 로테이션)
+    gemini_models = ['gemini-1.5-flash', 'gemini-2.0-flash-exp'] # 1.5 flash 우선 사용
     
     for api_key in api_keys:
         try:
-            client = genai.Client(api_key=api_key)
-            for model in gemini_models:
+            # 매 반복마다 키 설정
+            genai.configure(api_key=api_key)
+            
+            for model_name in gemini_models:
                 try:
-                    response = client.models.generate_content(
-                        model=model, 
-                        contents=prompt,
-                        config={'system_instruction': system_instruction}
+                    # 시스템 지침을 포함한 모델 생성
+                    model = genai.GenerativeModel(
+                        model_name=model_name,
+                        system_instruction=system_instruction
                     )
+                    
+                    response = model.generate_content(prompt)
+                    
                     if response and response.text:
-                        st.session_state.current_model = f"{model} (Key-Active)"
+                        st.session_state.current_model = f"{model_name} (Google)"
                         return response.text
                 except Exception:
-                    continue
+                    continue # 모델 변경 후 재시도
         except Exception:
-            continue
+            continue # 키 변경 후 재시도
             
+    # 2순위: Groq (Fallback)
     if groq_client:
         try:
             model_name = "llama-3.3-70b-versatile"
@@ -206,7 +218,7 @@ def analyze_with_hybrid_fallback(prompt, system_instruction="당신은 노련한
                 model=model_name,
                 temperature=0.2,
             )
-            st.session_state.current_model = f"{model_name} (Fallback)"
+            st.session_state.current_model = f"{model_name} (Groq)"
             return chat_completion.choices[0].message.content
         except Exception as e:
             st.error(f"Groq 호출 실패: {e}")
