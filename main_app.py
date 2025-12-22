@@ -9,7 +9,7 @@ from google.oauth2.service_account import Credentials
 # --- 1. 페이지 설정 및 세션 초기화 ---
 st.set_page_config(page_title="한방 임상 보조 시스템", page_icon="🩺", layout="centered")
 
-# 세션 상태 강제 초기화 (AttributeError 방지)
+# 세션 상태 강제 초기화
 keys = ['step', 'patient_info', 'follow_up_questions', 'responses', 'final_plan', 'shared_link', 'raw_text']
 for key in keys:
     if key not in st.session_state:
@@ -18,7 +18,7 @@ for key in keys:
         elif key == 'patient_info': st.session_state[key] = {"name": "", "gender": "미선택", "birth_year": ""}
         else: st.session_state[key] = ""
 
-# 깃허브 이미지 기본 경로 설정 (원장님 깃허브 정보 반영)
+# 깃허브 이미지 기본 경로 (필수!)
 GITHUB_RAW_URL = "https://raw.githubusercontent.com/idstring38-creator/hanbang_app/main/images/"
 MY_APP_URL = "https://idstring.streamlit.app/" 
 
@@ -44,17 +44,32 @@ if shared_id:
                 row_data = sheet.row_values(cell.row)
                 st.markdown(f"### 🩺 {row_data[2]} 최종진단")
                 st.markdown('<div style="background-color: white; padding: 25px; border-radius: 16px; border: 1px solid #e2e8f0;">', unsafe_allow_html=True)
-                # HTML 태그 렌더링 보완
-                content = row_data[4].replace("```html", "").replace("```", "")
-                st.markdown(content, unsafe_allow_html=True)
+                
+                # --- 공유 화면 렌더링 로직 개선 ---
+                raw_html = row_data[4].replace("```html", "").replace("```", "")
+                lines = raw_html.split('\n')
+                for line in lines:
+                    # 이미지 태그 검색
+                    img_match = re.search(r'\[IMG:(.*?)\]', line)
+                    if img_match:
+                        code = img_match.group(1).strip()
+                        # 텍스트에서 태그 제거 후 출력
+                        clean_line = re.sub(r'\[IMG:.*?\]', '', line)
+                        st.markdown(clean_line, unsafe_allow_html=True)
+                        # 이미지 출력
+                        img_url = f"{GITHUB_RAW_URL}{code}.jpg"
+                        st.image(img_url, width=350)
+                    else:
+                        # 태그가 없는 일반 줄은 그대로 출력
+                        st.markdown(line, unsafe_allow_html=True)
                 st.markdown('</div>', unsafe_allow_html=True)
-        except: st.error("해당 진료 기록을 찾을 수 없거나 만료되었습니다.")
-    if st.button("🏠 내 진료실 메인으로 이동"):
+        except: st.error("기록을 찾을 수 없습니다.")
+    if st.button("🏠 메인으로"):
         st.query_params.clear()
         st.rerun()
     st.stop()
 
-# --- 4. 커스텀 CSS (제목 가독성 및 여백) ---
+# --- 4. 커스텀 CSS ---
 st.markdown(f"""
     <style>
     .stCard {{ background-color: #ffffff; border-radius: 16px; padding: 25px; border: 1px solid #e2e8f0; margin-bottom: 20px; }}
@@ -122,8 +137,7 @@ elif st.session_state.step == "result":
             
             지침:
             1. 대제목은 <div class='result-title'>제목</div> 형식을 사용하고 항목간 한 줄씩 띄울 것.
-            2. [혈자리 가이드] 섹션에서 각 혈자리는 "(동측/대측) 혈자리명(코드)" 형식으로 작성하고, 
-               그 바로 뒤에 [IMG:코드] 태그를 붙일 것. (예: (동측) 합곡(LI4) [IMG:LI4])
+            2. **혈자리 처방 작성 시**: 각 혈자리 설명 끝에 반드시 **[IMG:혈자리코드]** 태그를 붙일 것. (예: ...통증을 완화합니다. [IMG:SI4])
             3. 모든 한의학 상병명은 U코드를 병기할 것.
             4. 변증은 500자 이상 상세히 작성할 것.
             """
@@ -140,34 +154,39 @@ elif st.session_state.step == "result":
     st.markdown('<div class="stCard">', unsafe_allow_html=True)
     st.subheader(f"📋 {st.session_state.patient_info['name']} 환자 최종진단")
     
-    # 텍스트 정제 및 HTML 출력
+    # --- 핵심 수정: 줄 단위 이미지 렌더링 ---
     raw_plan = st.session_state.final_plan.replace("```html", "").replace("```", "")
+    lines = raw_plan.split('\n')
     
-    # 섹션별 분리 출력 (이미지 처리를 위해)
-    if "<div class='result-title'>혈자리 가이드</div>" in raw_plan:
-        main_part, guide_part = raw_plan.split("<div class='result-title'>혈자리 가이드</div>")
-        st.markdown(main_part, unsafe_allow_html=True)
-        st.markdown("<div class='result-title'>혈자리 가이드</div>", unsafe_allow_html=True)
-        
-        # 혈자리 가이드 텍스트에서 이미지 태그 추출 및 실제 이미지 출력
-        lines = guide_part.split('\n')
-        for line in lines:
-            if line.strip():
-                st.markdown(re.sub(r'\[IMG:.*?\]', '', line), unsafe_allow_html=True)
-                img_match = re.search(r'\[IMG:(.*?)\]', line)
-                if img_match:
-                    code = img_match.group(1).strip()
-                    img_url = f"{GITHUB_RAW_URL}{code}.jpg"
-                    st.image(img_url, width=300, caption=f"{code} 위치 가이드")
-    else:
-        st.markdown(raw_plan, unsafe_allow_html=True)
+    for line in lines:
+        # 빈 줄은 건너뜀
+        if not line.strip(): continue
+            
+        # 해당 줄에 이미지 태그가 있는지 확인
+        img_match = re.search(r'\[IMG:(.*?)\]', line)
+        if img_match:
+            # 이미지 코드가 있으면
+            code = img_match.group(1).strip()
+            # 1. 텍스트에서 [IMG:...] 태그를 제거하고 출력
+            clean_line = re.sub(r'\[IMG:.*?\]', '', line)
+            st.markdown(clean_line, unsafe_allow_html=True)
+            # 2. 바로 아래에 해당 이미지 출력
+            img_url = f"{GITHUB_RAW_URL}{code}.jpg"
+            # 이미지가 없을 경우를 대비한 예외처리
+            try:
+                st.image(img_url, width=350)
+            except:
+                st.warning(f"이미지를 불러올 수 없습니다: {code}")
+        else:
+            # 이미지 태그가 없는 일반 텍스트 줄 출력
+            st.markdown(line, unsafe_allow_html=True)
 
-    # 🔗 복사 기능 구현 (st.code 활용)
+    # 🔗 복사 기능
     if st.session_state.shared_link:
         st.write("---")
-        st.markdown("### 🔗 환자용 공유 주소 (아래 박스 우측 버튼을 눌러 복사)")
-        st.code(st.session_state.shared_link, language="bash") # st.code는 기본적으로 복사 버튼을 제공함
-        st.caption("복사한 링크를 카카오톡이나 문자로 환자분께 전송해 주세요.")
+        st.markdown("### 🔗 환자용 공유 주소")
+        st.code(st.session_state.shared_link, language="bash")
+        st.caption("위 박스 우측 버튼을 눌러 복사하세요.")
 
     if st.button("🔄 다음 환자 진료 시작"):
         for key in list(st.session_state.keys()): del st.session_state[key]
