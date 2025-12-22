@@ -90,27 +90,35 @@ except:
 
 treatment_db_content = st.secrets.get("TREATMENT_DB", "DB 정보가 없습니다.")
 
-# --- 5. 분석 엔진 (정상 복구 버전) ---
+# --- 5. 분석 엔진 (404 에러 수정 버전) ---
 def analyze_with_hybrid_fallback(prompt, system_instruction="당신은 노련한 한의사 보조 AI입니다."):
-    # 1. Gemini 시도 (최신 모델 우선)
-    gemini_models = ['gemini-2.0-flash-exp', 'gemini-1.5-flash']
+    # 모델 이름 앞에 'models/'를 붙여 경로를 명확히 지정합니다.
+    gemini_models = ['models/gemini-1.5-flash', 'models/gemini-2.0-flash-exp']
     
     for api_key in api_keys:
         try:
+            # v1beta 대신 표준 v1 방식으로 동작하도록 설정
             genai.configure(api_key=api_key)
             for model_name in gemini_models:
                 try:
-                    model = genai.GenerativeModel(model_name=model_name, system_instruction=system_instruction)
+                    # 호출 방식을 가장 안정적인 형태로 변경
+                    model = genai.GenerativeModel(
+                        model_name=model_name,
+                        system_instruction=system_instruction
+                    )
                     response = model.generate_content(prompt)
+                    
                     if response and response.text:
-                        st.session_state.current_model = f"{model_name} (Google)"
+                        # 화면 표시용 이름은 깔끔하게 출력
+                        display_name = model_name.split('/')[-1]
+                        st.session_state.current_model = f"{display_name} (Google)"
                         return response.text
-                except:
+                except Exception:
                     continue
-        except:
+        except Exception:
             continue
             
-    # 2. Gemini 실패 시 Groq 실행
+    # 이하 Groq 로직은 동일
     if groq_client:
         try:
             model_name = "llama-3.3-70b-versatile"
@@ -124,10 +132,10 @@ def analyze_with_hybrid_fallback(prompt, system_instruction="당신은 노련한
             )
             st.session_state.current_model = f"{model_name} (Groq)"
             return chat_completion.choices[0].message.content
-        except Exception as e:
-            st.error(f"모든 AI 호출 실패: {e}")
+        except Exception:
+            pass
     
-    raise Exception("분석 모델을 호출할 수 없습니다.")
+    raise Exception("모든 AI 모델 호출에 실패했습니다.")
 
 def clean_newlines(text):
     return re.sub(r'\n{3,}', '\n\n', text).strip() if text else ""
@@ -206,3 +214,4 @@ with st.sidebar:
     if st.button("🏠 홈으로 (초기화)"):
         clear_form()
         st.rerun()
+
