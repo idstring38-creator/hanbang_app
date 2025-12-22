@@ -9,7 +9,6 @@ from google.oauth2.service_account import Credentials
 # --- 1. 페이지 설정 및 세션 초기화 ---
 st.set_page_config(page_title="한방 임상 보조 시스템", page_icon="🩺", layout="centered")
 
-# 세션 상태 초기화 (AttributeError 방지)
 for key in ['step', 'patient_info', 'follow_up_questions', 'responses', 'final_plan', 'shared_link', 'raw_text']:
     if key not in st.session_state:
         if key == 'step': st.session_state[key] = "input"
@@ -17,7 +16,7 @@ for key in ['step', 'patient_info', 'follow_up_questions', 'responses', 'final_p
         elif key in ['follow_up_questions', 'responses']: st.session_state[key] = [] if key=='follow_up_questions' else {}
         else: st.session_state[key] = ""
 
-MY_APP_URL = "https://idstring.streamlit.app/" # 실제 배포 주소로 변경
+MY_APP_URL = "https://idstring.streamlit.app/" 
 
 # --- 2. 구글 시트 연동 ---
 def get_storage_sheet():
@@ -50,7 +49,7 @@ if shared_id:
         st.rerun()
     st.stop()
 
-# --- 4. 커스텀 CSS (디자인 강화) ---
+# --- 4. 커스텀 CSS ---
 st.markdown("""
     <style>
     .stCard { background-color: #ffffff; border-radius: 16px; padding: 25px; border: 1px solid #e2e8f0; margin-bottom: 20px; }
@@ -85,60 +84,65 @@ if st.session_state.step == "input":
     with c3: birth_year = st.text_input("출생년도", placeholder="예: 1985")
     raw_text = st.text_area("주소증 입력", height=150)
     
-    if st.button("✨ 분석 시작 및 문진 생성 (최소 5개)"):
+    if st.button("✨ 분석 시작 및 문진 생성"):
         if raw_text:
             st.session_state.patient_info = {"name": name, "gender": gender, "birth_year": birth_year}
-            with st.spinner("질문을 생성 중입니다..."):
+            with st.spinner("AI가 정밀 문진을 준비 중입니다..."):
                 genai.configure(api_key=st.secrets["GEMINI_API_KEY"][0])
                 model = genai.GenerativeModel('models/gemini-2.0-flash-exp')
-                PROMPT = f"환자: {name}, 증상: {raw_text}\n[지침]: 변증을 위해 질문 5개 이상 필수 생성. 한 줄에 하나씩 ?로 끝낼 것.\n[추가 확인 사항]: 질문들..."
+                PROMPT = f"환자: {name}, 증상: {raw_text}\n[지침]: 변증을 위해 질문 5개 이상 필수 생성. ?로 끝나는 질문 리스트업.\n[추가 확인 사항]: 질문들..."
                 try:
                     res = model.generate_content(PROMPT).text
                     qs = [q.strip() for q in re.split(r'\n|(?<=\?)\s*', res.split("[추가 확인 사항]")[-1]) if '?' in q]
-                    defaults = ["증상 발생 시기는?", "통증 양상은?", "소화 상태는?", "수면 상태는?", "악화 요인은?"]
+                    defaults = ["증상 발현 시기는?", "통증의 양상은?", "소화 및 배변은?", "수면 및 컨디션은?", "심해지는 조건은?"]
                     st.session_state.follow_up_questions = (qs + defaults)[:max(5, len(qs))]
                     st.session_state.raw_text = raw_text
                     st.session_state.step = "verify"
                     st.rerun()
-                except: st.error("API 연결 오류")
+                except: st.error("API 연결 실패")
     st.markdown('</div>', unsafe_allow_html=True)
 
 elif st.session_state.step == "verify":
     st.markdown('<div class="stCard">', unsafe_allow_html=True)
     st.subheader("🔍 정밀 문진")
-    questions = st.session_state.get('follow_up_questions', [])
-    for i, q in enumerate(questions):
+    for i, q in enumerate(st.session_state.follow_up_questions):
         st.markdown(f'<div class="q-item">{i+1}. {q}</div>', unsafe_allow_html=True)
         st.session_state.responses[f"q_{i}"] = st.text_input(f"답변 {i+1}", key=f"ans_{i}")
     
-    if st.button("✅ 최종 처방 생성 및 저장"):
+    if st.button("✅ 심층 진단 및 처방 생성"):
         st.session_state.step = "result"
         st.rerun()
 
 elif st.session_state.step == "result":
     if not st.session_state.final_plan:
-        with st.spinner("종합 진단 구성 중..."):
+        with st.spinner("최종 진단 및 처방을 구성 중입니다 (약 20초 소요)..."):
             p = st.session_state.patient_info
             age = calculate_age(p['birth_year'])
             ans_str = "\n".join([f"Q: {q} A: {st.session_state.responses.get(f'q_{i}', '')}" for i, q in enumerate(st.session_state.follow_up_questions)])
-            db = st.secrets.get("TREATMENT_DB", "")
+            db_content = st.secrets.get("TREATMENT_DB", "데이터 없음")
             
             FINAL_PROMPT = f"""
-            [TREATMENT_DB]: {db}
-            환자: {p['name']}({p['gender']}, {age}세), 주소증: {st.session_state.raw_text}, 문진답변: {ans_str}
-            
-            [지침 - 순서 엄격 준수]:
-            1. 모든 대제목은 <div class='result-title'>제목명</div> 형식을 사용할 것.
-            2. **[환자 정보 요약]**: 환자의 이름, 성별, 연령, 주소증을 가장 먼저 정리하여 출력.
-            3. **[차트 정리]**: 의료법 방어용 기록.
-               - 필수 포함: "시술 전후 철저히 소독함", "부작용 상세 설명함", "안정가료 지시함".
-               - **주의**: 입력되지 않은 맥진, 설진 정보나 '상세 기록' 같은 예시 문구는 절대 출력하지 말 것. 오직 실제 환자 정보와 필수 방어 문구만 간략히 작성.
-            4. **[변증 및 진단]**: 양방상병명(KCD), 한방상병명 병기 및 응급 판단 기재.
+            [TREATMENT_DB]: {db_content}
+            [환자 정보]: {p['name']}({p['gender']}, {age}세) / 주소증: {st.session_state.raw_text}
+            [문진 답변]: {ans_str}
+
+            [작성 지침 - 엄격 준수]:
+            1. 모든 대제목은 <div class='result-title'>제목명</div>을 사용한다.
+            2. **[환자 정보 요약]**: 이름, 성별, 나이, 주소증을 상단에 고정한다.
+            3. **[차트 정리]**: 법적 방어 문구(소독함, 부작용 설명함, 안정가료 지시함)를 반드시 포함하고, 불필요한 예시 문구(맥진/설진 기록 등)는 제거한다.
+            4. **[변증 및 진단]**: 
+               - **최소 500자 이상의 분량**으로 작성한다.
+               - 입력된 환자 정보와 문진 답변을 근거로 하여 한의학적 변증(한열허실, 장부변증 등)의 근거와 병명 추론 과정을 객관적이고 논리적으로 기술한다.
+               - 한의학 상병명은 반드시 **U코드**를 기준으로 기재한다 (예: 근막통증증후군 U50.11). 양방 KCD 병명도 병기한다.
+               - 응급 상황 판단 결과를 포함한다.
             5. **[혈자리 처방]**: 
-               - 형식: "(동측/대측) 혈자리명 : 이유"
-               - **중요**: 각 혈자리 처방 마다 <br> 태그를 넣어 반드시 줄바꿈 할 것.
-            6. **[혈자리 가이드]**: "(동측/대측) 혈자리명 [이미지: URL]" 형식으로 작성.
+               - **철저히 [TREATMENT_DB]에 있는 내용만을 사용한다.**
+               - 형식: "(동측/대측) 혈자리명 : 해당 혈자리가 환자의 증상과 어떻게 매칭되는지 [TREATMENT_DB]의 원리를 근거로 상세히 설명".
+               - 혈자리마다 <br> 태그로 줄바꿈한다.
+            6. **[추가 혈자리 권유]**: [TREATMENT_DB]에 없지만 증상 완화에 도움을 줄 수 있는 혈자리가 있다면 이 섹션에 별도로 기재한다.
+            7. **[혈자리 가이드]**: "(동측/대측) 혈자리명 [이미지: URL]" 형식으로 작성한다.
             """
+            
             genai.configure(api_key=st.secrets["GEMINI_API_KEY"][0])
             model = genai.GenerativeModel('models/gemini-2.0-flash-exp')
             st.session_state.final_plan = model.generate_content(FINAL_PROMPT).text
@@ -155,20 +159,16 @@ elif st.session_state.step == "result":
     clean_html = st.session_state.final_plan.replace("```html", "").replace("```", "")
     content_parts = clean_html.split("<div class='result-title'>혈자리 가이드</div>")
     
-    # 본문 출력 (환자정보요약, 차트정리, 변증, 혈자리처방)
+    # 상단 텍스트 출력
     st.markdown(content_parts[0], unsafe_allow_html=True)
 
-    # 혈자리 가이드 및 이미지 출력
+    # 혈자리 이미지 가이드 출력
     if len(content_parts) > 1:
         st.markdown("<div class='result-title'>혈자리 가이드</div>", unsafe_allow_html=True)
-        # 이미지 정보 추출 (동측/대측 포함)
         img_patterns = re.findall(r'(\((?:동측|대측)\)\s*\S+)\s*\[이미지:\s*(https?:\/\/[^\s\]]+)\]', content_parts[1], re.I)
-        
-        # 텍스트 리스트 먼저 출력 (이미지 태그 제거 후)
         clean_guide_text = re.sub(r'\[이미지:\s*(https?:\/\/[^\s\]]+)\]', '', content_parts[1])
         st.markdown(clean_guide_text, unsafe_allow_html=True)
         
-        # 이미지 그리드 출력
         if img_patterns:
             st.divider()
             cols = st.columns(2)
@@ -178,7 +178,7 @@ elif st.session_state.step == "result":
                     st.markdown(f"<div style='text-align:center; font-weight:bold; color:#1d4ed8;'>{label}</div>", unsafe_allow_html=True)
 
     if st.session_state.shared_link:
-        st.info(f"🔗 공유 링크: {st.session_state.shared_link}")
+        st.info(f"🔗 환자 공유 주소: {st.session_state.shared_link}")
 
     if st.button("🔄 다음 환자 진료"):
         for key in list(st.session_state.keys()): del st.session_state[key]
