@@ -66,13 +66,12 @@ st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;700&display=swap');
     html, body, [class*="css"] { font-family: 'Noto Sans KR', sans-serif; background-color: #f8fafc; }
-    .stCard { background-color: #ffffff; border-radius: 16px; padding: 20px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); border: 1px solid #e2e8f0; margin-bottom: 20px; }
+    .stCard { background-color: #ffffff; border-radius: 16px; padding: 25px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); border: 1px solid #e2e8f0; margin-bottom: 20px; }
     .main-header { text-align: center; margin-bottom: 20px; }
-    .soap-box { background-color: #f1f5f9; border-left: 5px solid #3b82f6; padding: 12px; border-radius: 8px; margin-bottom: 15px; white-space: pre-wrap; font-size: 0.92rem; line-height: 1.4; }
-    .stButton>button { width: 100%; border-radius: 16px; height: 3.5em; background-color: #2563eb; color: white !important; font-weight: 800; border: none; box-shadow: 0 4px 10px rgba(37, 99, 235, 0.2); }
-    .q-item { background-color: #fffbeb; border: 1px solid #fde68a; padding: 12px; border-radius: 10px; color: #92400e; margin-top: 10px; font-size: 0.95rem; font-weight: 500; }
+    .q-item { background-color: #fefce8; border: 1px solid #fef08a; padding: 15px; border-radius: 12px; color: #854d0e; margin-top: 15px; font-size: 1rem; font-weight: 600; }
     .model-tag { font-size: 0.75rem; color: #64748b; background: #f1f5f9; padding: 2px 8px; border-radius: 4px; margin-bottom: 8px; display: inline-block; }
     .acu-caption { font-size: 1.1rem !important; font-weight: 700 !important; color: #0f172a !important; text-align: center; margin-top: 5px; }
+    .stButton>button { width: 100%; border-radius: 16px; height: 3.5em; background-color: #2563eb; color: white !important; font-weight: 800; border: none; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -90,55 +89,36 @@ except:
 
 treatment_db_content = st.secrets.get("TREATMENT_DB", "DB 정보가 없습니다.")
 
-# --- 5. 분석 엔진 (404 에러 수정 버전) ---
+# --- 5. 분석 엔진 ---
 def analyze_with_hybrid_fallback(prompt, system_instruction="당신은 노련한 한의사 보조 AI입니다."):
-    # 모델 이름 앞에 'models/'를 붙여 경로를 명확히 지정합니다.
-    gemini_models = ['models/gemini-1.5-flash', 'models/gemini-2.0-flash-exp']
+    gemini_models = ['models/gemini-2.0-flash-exp', 'models/gemini-1.5-flash']
     
     for api_key in api_keys:
         try:
-            # v1beta 대신 표준 v1 방식으로 동작하도록 설정
             genai.configure(api_key=api_key)
             for model_name in gemini_models:
                 try:
-                    # 호출 방식을 가장 안정적인 형태로 변경
-                    model = genai.GenerativeModel(
-                        model_name=model_name,
-                        system_instruction=system_instruction
-                    )
+                    model = genai.GenerativeModel(model_name=model_name, system_instruction=system_instruction)
                     response = model.generate_content(prompt)
-                    
                     if response and response.text:
-                        # 화면 표시용 이름은 깔끔하게 출력
                         display_name = model_name.split('/')[-1]
                         st.session_state.current_model = f"{display_name} (Google)"
                         return response.text
-                except Exception:
-                    continue
-        except Exception:
-            continue
+                except: continue
+        except: continue
             
-    # 이하 Groq 로직은 동일
     if groq_client:
         try:
             model_name = "llama-3.3-70b-versatile"
             chat_completion = groq_client.chat.completions.create(
-                messages=[
-                    {"role": "system", "content": f"{system_instruction}\n당신은 제공된 DB를 엄격히 준수합니다."},
-                    {"role": "user", "content": prompt}
-                ],
-                model=model_name,
-                temperature=0.2,
+                messages=[{"role": "system", "content": system_instruction}, {"role": "user", "content": prompt}],
+                model=model_name, temperature=0.2,
             )
             st.session_state.current_model = f"{model_name} (Groq)"
             return chat_completion.choices[0].message.content
-        except Exception:
-            pass
+        except: pass
     
-    raise Exception("모든 AI 모델 호출에 실패했습니다.")
-
-def clean_newlines(text):
-    return re.sub(r'\n{3,}', '\n\n', text).strip() if text else ""
+    raise Exception("AI 모델 호출 실패")
 
 # --- 6. UI 로직 ---
 st.markdown('<div class="main-header">', unsafe_allow_html=True)
@@ -153,16 +133,16 @@ if st.session_state.step == "input":
         raw_text = st.text_area("증상을 입력하세요", key='raw_text_input', height=200, label_visibility="collapsed")
         if st.button("✨ 1차 분석 및 문진 확인"):
             if raw_text:
-                with st.spinner("Gemini가 증상을 분석 중입니다..."):
-                    FIRST_PROMPT = f"다음 대화 원문을 바탕으로 '문진 단계'를 수행하세요.\n\n**출력 형식 필수 지침**:\n1. [SOAP 요약]: 요약\n2. [추가 확인 사항]: 질문 리스트\n\n[대화 원문]: {raw_text}"
+                with st.spinner("증상을 분석 중입니다..."):
+                    FIRST_PROMPT = f"다음 대화 원문을 바탕으로 '문진 단계'를 수행하세요.\n\n**출력 형식 필수 지침**:\n1. [SOAP 요약]: 요약 내용\n2. [추가 확인 사항]: 질문 리스트\n\n[대화 원문]: {raw_text}"
                     result = analyze_with_hybrid_fallback(FIRST_PROMPT)
                     if "[추가 확인 사항]" in result:
                         parts = result.split("[추가 확인 사항]")
-                        st.session_state.soap_result = clean_newlines(parts[0].replace("[SOAP 요약]", "").strip())
-                        q_list = re.split(r'\n?\d+\.\s*', parts[1].strip())
+                        st.session_state.soap_result = parts[0].replace("[SOAP 요약]", "").strip()
+                        q_list = re.split(r'\n\d+\.\s*', parts[1].strip())
                         st.session_state.follow_up_questions = [q.strip() for q in q_list if len(q.strip()) > 5]
                     else:
-                        st.session_state.soap_result = clean_newlines(result.replace("[SOAP 요약]", "").strip())
+                        st.session_state.soap_result = result.replace("[SOAP 요약]", "").strip()
                     st.session_state.raw_text = raw_text
                     st.session_state.step = "verify"
                     st.rerun()
@@ -171,30 +151,48 @@ if st.session_state.step == "input":
 elif st.session_state.step == "verify":
     st.markdown('<div class="stCard">', unsafe_allow_html=True)
     st.markdown(f'<div class="model-tag">🤖 분석 모델: {st.session_state.current_model}</div>', unsafe_allow_html=True)
-    st.subheader("📋 1차 SOAP 요약")
-    st.markdown(f'<div class="soap-box">{st.session_state.soap_result}</div>', unsafe_allow_html=True)
+    st.subheader("🔍 추가 문진이 필요합니다")
+    st.write("진단을 위해 아래 질문들에 대해 답변해 주세요.")
+    
+    # 1. 질문마다 개별 답변 칸 생성
     if st.session_state.follow_up_questions:
-        st.subheader("🔍 추가 확인 사항")
         for i, question in enumerate(st.session_state.follow_up_questions):
-            st.markdown(f'<div class="q-item">{i+1}. {question}</div>', unsafe_allow_html=True)
-            st.session_state.additional_responses[f"q_{i}"] = st.text_input(f"답변 {i+1}", key=f"input_{i}", label_visibility="collapsed")
-    if st.button("✅ 최종 확인 및 처방 생성"):
-        st.session_state.additional_input = "\n".join([f"Q: {q}\nA: {st.session_state.additional_responses.get(f'q_{i}', '미응답')}" for i, q in enumerate(st.session_state.follow_up_questions)])
+            st.markdown(f'<div class="q-item">질문 {i+1}. {question}</div>', unsafe_allow_html=True)
+            # 세션 상태에 저장하여 답변 유지
+            st.session_state.additional_responses[f"q_{i}"] = st.text_input(
+                f"질문 {i+1}에 대한 답변", 
+                key=f"input_box_{i}", 
+                placeholder="환자의 답변을 입력하세요...",
+                label_visibility="collapsed"
+            )
+    else:
+        st.info("추가 확인 사항이 없습니다. 바로 처방을 생성할 수 있습니다.")
+
+    if st.button("✅ 답변 완료 및 처방 생성"):
+        # 입력된 답변들을 프롬프트용 텍스트로 결합
+        responses_text = ""
+        for i, q in enumerate(st.session_state.follow_up_questions):
+            ans = st.session_state.additional_responses.get(f"q_{i}", "특이사항 없음")
+            responses_text += f"질문: {q}\n답변: {ans}\n\n"
+        st.session_state.additional_input = responses_text
         st.session_state.step = "result"
         st.rerun()
     st.markdown('</div>', unsafe_allow_html=True)
 
 elif st.session_state.step == "result":
     if not st.session_state.final_plan:
-        with st.spinner("Gemini가 최종 치료 계획을 수립 중..."):
-            FINAL_PROMPT = f"[치료 DB]: {treatment_db_content}\n[1차 요약]: {st.session_state.soap_result}\n[추가 답변]: {st.session_state.additional_input}\n최종 진단 및 처방을 수립하세요."
+        with st.spinner("최종 치료 계획 수립 중..."):
+            FINAL_PROMPT = f"[치료 DB]: {treatment_db_content}\n[1차 요약]: {st.session_state.soap_result}\n[추가 답변 내역]:\n{st.session_state.additional_input}\n\n위 정보를 종합하여 최종 SOAP 진단과 처방 계획을 수립하세요."
             st.session_state.final_plan = analyze_with_hybrid_fallback(FINAL_PROMPT)
 
     st.markdown('<div class="stCard">', unsafe_allow_html=True)
     st.markdown(f'<div class="model-tag">🤖 최종 모델: {st.session_state.current_model}</div>', unsafe_allow_html=True)
     st.subheader("💡 최종 진단 및 치료 계획")
+    # 이미지 태그를 제외한 텍스트 출력
     display_text = re.sub(r'\S+\s*/\s*\S+\s*\[이미지:\s*https?:\/\/[^\s\]]+\]', '', st.session_state.final_plan)
     st.markdown(display_text)
+    
+    # 이미지 출력 로직
     img_patterns = re.findall(r'([^\s\[]+(?:\s*/\s*[^\s\[]+)?)\s*\[이미지:\s*(https?:\/\/[^\s\]]+)\]', st.session_state.final_plan)
     if img_patterns:
         st.divider()
@@ -203,6 +201,7 @@ elif st.session_state.step == "result":
             with cols[idx % 2]:
                 st.image(url.strip(), use_container_width=True)
                 st.markdown(f'<div class="acu-caption">{label}</div>', unsafe_allow_html=True)
+    
     if st.button("📲 모바일 시트 전송"):
         if save_to_google_sheets(st.session_state.final_plan): st.success("전송 완료!")
     if st.button("🔄 다음 환자 진료"):
@@ -214,4 +213,3 @@ with st.sidebar:
     if st.button("🏠 홈으로 (초기화)"):
         clear_form()
         st.rerun()
-
