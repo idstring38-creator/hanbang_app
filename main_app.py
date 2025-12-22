@@ -3,18 +3,72 @@ import google.generativeai as genai
 import re
 import datetime
 import uuid
-from groq import Groq
 import gspread
 from google.oauth2.service_account import Credentials
 
 # --- 1. 페이지 설정 및 공유 파라미터 확인 ---
 st.set_page_config(page_title="한의사 임상 보조 시스템", page_icon="🩺", layout="centered")
 
-# URL 주소창에 ?view=... 가 있는지 확인 (공유된 페이지 보기 모드)
+# 원장님의 실제 앱 주소 적용
+MY_APP_URL = "https://idstring.streamlit.app/" 
+
+# URL 파라미터 확인 (공유된 페이지 모드인지 체크)
 query_params = st.query_params
 shared_id = query_params.get("view")
 
-# --- 2. 세션 상태 초기화 ---
+# --- 2. 구글 시트 연동 함수 (영구 저장 및 불러오기용) ---
+def get_storage_sheet():
+    try:
+        scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+        creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scope)
+        client = gspread.authorize(creds)
+        # Secrets에 등록된 spreadsheet_id를 사용합니다.
+        return client.open_by_key(st.secrets["spreadsheet_id"]).sheet1
+    except Exception as e:
+        return None
+
+# --- 3. [공유 페이지 모드] ID가 있을 경우 실행되는 화면 ---
+if shared_id:
+    sheet = get_storage_sheet()
+    if sheet:
+        try:
+            cell = sheet.find(shared_id)
+            if cell:
+                row_data = sheet.row_values(cell.row)
+                # 저장 구조: [ID, 날짜, 환자정보, 요약, 전체내용]
+                patient_name = row_data[2]
+                final_content = row_data[4]
+                
+                st.markdown(f"### 🩺 {patient_name} 진료 결과")
+                st.info("🔗 이 페이지는 원장님으로부터 공유된 진료 기록 웹페이지입니다.")
+                st.markdown('<div style="background-color: white; padding: 25px; border-radius: 16px; border: 1px solid #e2e8f0; box-shadow: 0 4px 6px rgba(0,0,0,0.05);">', unsafe_allow_html=True)
+                
+                # 본문 출력 (이미지 태그 제거 후)
+                clean_display = re.sub(r'\[이미지:\s*https?:\/\/[^\s\]]+\]', '', final_content)
+                st.markdown(clean_display)
+                
+                # 혈자리 이미지 복구 및 출력
+                img_patterns = re.findall(r'(\S+)\s*\[이미지:\s*(https?:\/\/[^\s\]]+)\]', final_content, re.I)
+                if img_patterns:
+                    st.divider()
+                    st.subheader("🖼️ 혈자리 위치 가이드")
+                    cols = st.columns(2)
+                    for idx, (name, url) in enumerate(img_patterns):
+                        with cols[idx % 2]:
+                            st.image(url.strip(), use_container_width=True)
+                            st.markdown(f"<div style='text-align:center; font-weight:700; background:#f1f5f9; padding:5px; border-radius:5px;'>{name}</div>", unsafe_allow_html=True)
+                st.markdown('</div>', unsafe_allow_html=True)
+            else:
+                st.error("해당 진료 기록을 찾을 수 없습니다.")
+        except:
+            st.error("데이터를 불러오는 중 오류가 발생했습니다.")
+    
+    if st.button("🏠 내 진료실 메인으로 돌아가기"):
+        st.query_params.clear()
+        st.rerun()
+    st.stop()
+
+# --- 4. 세션 상태 초기화 및 유틸리티 ---
 if 'patient_info' not in st.session_state:
     st.session_state.patient_info = {"name": "", "gender": "미선택", "birth_year": ""}
 if 'step' not in st.session_state:
@@ -32,34 +86,6 @@ if 'final_plan' not in st.session_state:
 if 'current_model' not in st.session_state:
     st.session_state.current_model = ""
 
-# --- 3. [공유 페이지 모드] ID가 있을 경우 실행 ---
-if shared_id:
-    if 'db_storage' in st.session_state and shared_id in st.session_state.db_storage:
-        data = st.session_state.db_storage[shared_id]
-        st.markdown(f"### 🩺 {data['name']} 님의 진료 결과")
-        st.info("이 페이지는 원장님으로부터 공유된 진료 기록입니다.")
-        st.markdown('<div style="background-color: white; padding: 20px; border-radius: 15px; border: 1px solid #e2e8f0; box-shadow: 0 4px 6px rgba(0,0,0,0.05);">', unsafe_allow_html=True)
-        st.markdown(data['content'])
-        
-        # 혈자리 이미지 다시 표시
-        img_patterns = re.findall(r'(\S+)\s*\[이미지:\s*(https?:\/\/[^\s\]]+)\]', data['content'], re.I)
-        if img_patterns:
-            st.divider()
-            cols = st.columns(2)
-            for idx, (name, url) in enumerate(img_patterns):
-                with cols[idx % 2]:
-                    st.image(url.strip(), use_container_width=True)
-                    st.markdown(f"<div style='text-align:center; font-weight:700;'>{name}</div>", unsafe_allow_html=True)
-        st.markdown('</div>', unsafe_allow_html=True)
-    else:
-        st.error("해당 진료 기록을 찾을 수 없거나 만료되었습니다.")
-    
-    if st.button("🏠 내 진료실 메인으로 이동"):
-        st.query_params.clear()
-        st.rerun()
-    st.stop()
-
-# --- 4. 기본 유틸리티 함수 ---
 def calculate_age(birth_year):
     try:
         current_year = 2025
@@ -76,21 +102,21 @@ def clear_form():
     st.session_state.final_plan = ""
     st.session_state.current_model = ""
 
-# --- 5. 커스텀 CSS (원장님이 좋아하신 버튼 스타일) ---
+# --- 5. 커스텀 CSS (버튼 스타일 및 UI) ---
 st.markdown("""
     <style>
     .stCard { background-color: #ffffff; border-radius: 16px; padding: 25px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); border: 1px solid #e2e8f0; margin-bottom: 20px; }
     .q-item { background-color: #fefce8; border: 1px solid #fef08a; padding: 12px; border-radius: 10px; color: #854d0e; margin-top: 10px; font-weight: 500; }
     .acu-caption { font-size: 1.1rem !important; font-weight: 700 !important; color: #0f172a !important; text-align: center; margin-top: 5px; background: #f1f5f9; padding: 5px; border-radius: 5px; }
     div.stButton > button { border-radius: 15px !important; font-weight: 800 !important; transition: all 0.3s ease !important; }
-    .main-btn > div > button { background-color: #2563eb !important; color: white !important; font-size: 1.3rem !important; height: 3.5em !important; box-shadow: 0 4px 15px rgba(37, 99, 235, 0.4) !important; }
-    .verify-btn > div > button { background-color: #059669 !important; color: white !important; font-size: 1.3rem !important; height: 3.5em !important; box-shadow: 0 4px 15px rgba(5, 150, 105, 0.4) !important; }
-    .share-btn > div > button { background-color: #f8fafc !important; color: #1e293b !important; border: 1px solid #e2e8f0 !important; height: 3em !important; }
+    .main-btn > div > button { background-color: #2563eb !important; color: white !important; font-size: 1.3rem !important; height: 3.5em !important; box-shadow: 0 4px 15px rgba(37, 99, 235, 0.4) !important; width: 100% !important;}
+    .verify-btn > div > button { background-color: #059669 !important; color: white !important; font-size: 1.3rem !important; height: 3.5em !important; box-shadow: 0 4px 15px rgba(5, 150, 105, 0.4) !important; width: 100% !important;}
+    .share-btn > div > button { background-color: #f8fafc !important; color: #1e293b !important; border: 1px solid #e2e8f0 !important; height: 3.2em !important; width: 100% !important;}
     .model-badge { font-size: 0.8rem; background-color: #f1f5f9; color: #64748b; padding: 4px 12px; border-radius: 50px; font-weight: 600; margin-bottom: 5px; display: inline-block; border: 1px solid #e2e8f0; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 6. API 및 분석 엔진 ---
+# --- 6. API 설정 ---
 api_keys = st.secrets.get("GEMINI_API_KEY", [])
 if isinstance(api_keys, str): api_keys = [api_keys]
 groq_client = None
@@ -114,8 +140,8 @@ def analyze_with_hybrid_fallback(prompt):
         except: continue
     return "분석 실패"
 
-# --- 7. 메인 UI ---
-st.title("🩺 한의사 임상 보조 시스템")
+# --- 7. 메인 UI 흐름 ---
+st.title("🩺 한방 임상 보조 시스템")
 
 if st.session_state.step == "input":
     with st.container():
@@ -132,9 +158,9 @@ if st.session_state.step == "input":
         if st.button("✨ 1차 분석 및 문진 확인 시작"):
             if raw_text and birth_year:
                 st.session_state.patient_info = {"name": name, "gender": gender, "birth_year": birth_year}
-                with st.spinner("분석 중..."):
+                with st.spinner("AI 분석 중..."):
                     age = calculate_age(birth_year)
-                    FIRST_PROMPT = f"환자: {name}({gender}, {age}세)\n대화: {raw_text}\n\n지침: 추가 문진 질문 리스트를 만드세요. 질문 끝에 ? 필수.\n\n[SOAP 요약]: ...\n[추가 확인 사항]: 질문들..."
+                    FIRST_PROMPT = f"환자: {name}({gender}, {age}세)\n대화: {raw_text}\n\n[지침]: 추가 문진이 필요한 항목을 질문 리스트(? 포함)로 작성하세요.\n\n[SOAP 요약]: ...\n[추가 확인 사항]: 질문들..."
                     result = analyze_with_hybrid_fallback(FIRST_PROMPT)
                     if "[추가 확인 사항]" in result:
                         parts = result.split("[추가 확인 사항]")
@@ -150,6 +176,7 @@ elif st.session_state.step == "verify":
     st.markdown('<div class="stCard">', unsafe_allow_html=True)
     p = st.session_state.patient_info
     st.write(f"**진료 환자:** {p['name']} ({p['gender']} / {calculate_age(p['birth_year'])}세)")
+    st.subheader("🔍 추가 문진")
     for i, q in enumerate(st.session_state.follow_up_questions):
         st.markdown(f'<div class="q-item">{q}</div>', unsafe_allow_html=True)
         st.session_state.additional_responses[f"q_{i}"] = st.text_input(f"답변 {i+1}", key=f"ans_{i}", label_visibility="collapsed")
@@ -163,10 +190,19 @@ elif st.session_state.step == "verify":
 
 elif st.session_state.step == "result":
     if not st.session_state.final_plan:
-        with st.spinner("진단 및 KCD 상병 추론 중..."):
+        with st.spinner("최종 진단 및 KCD 상병 추론 중..."):
             p = st.session_state.patient_info
             age = calculate_age(p['birth_year'])
-            FINAL_PROMPT = f"""[치료 DB]: {treatment_db_content}\n[환자]: {p['name']}, {age}세\n[증상]: {st.session_state.raw_text}\n{st.session_state.additional_input}\n\n필수항목:\n1. **[의심되는 질환명]**: KCD 상병코드 및 한방 상병코드(U코드) 포함 추론.\n2. **[차트정리]**: 사실요약 및 안정가료 지도 문구.\n3. **[최종 처방]**: 동측/대측 원리 명시.\n4. **[혈자리 가이드]**: 하단에 이름(코드) [이미지: URL] 형식 작성."""
+            FINAL_PROMPT = f"""
+            [치료 DB]: {treatment_db_content}
+            [환자]: {p['name']}, {age}세
+            [증상]: {st.session_state.raw_text}\n{st.session_state.additional_input}
+
+            1. **[의심되는 질환명]**: KCD 상병코드(예: S33.50)와 한의 상병코드(U코드)를 반드시 포함하여 상세히 추론하세요.
+            2. **[차트정리]**: 사실 기반 요약 및 '안정가료 지도' 문구 포함.
+            3. **[최종 처방]**: 동측/대측 원리 명시.
+            4. **[혈자리 가이드]**: 하단에 `이름(코드) [이미지: URL]` 리스트 작성.
+            """
             st.session_state.final_plan = analyze_with_hybrid_fallback(FINAL_PROMPT)
 
     st.markdown('<div class="stCard">', unsafe_allow_html=True)
@@ -174,9 +210,11 @@ elif st.session_state.step == "result":
     p = st.session_state.patient_info
     st.subheader(f"진료 결과: {p['name']} ({p['gender']} / {calculate_age(p['birth_year'])}세)")
     
+    # 본문 출력
     clean_display = re.sub(r'\[이미지:\s*https?:\/\/[^\s\]]+\]', '', st.session_state.final_plan)
     st.markdown(clean_display)
     
+    # 이미지 출력 로직
     img_patterns = re.findall(r'(\S+)\s*\[이미지:\s*(https?:\/\/[^\s\]]+)\]', st.session_state.final_plan, re.I)
     if img_patterns:
         st.divider()
@@ -189,22 +227,27 @@ elif st.session_state.step == "result":
                 st.markdown(f'<div class="acu-caption">{name}</div>', unsafe_allow_html=True)
             idx += 1
     
-    # --- 공유 기능 추가 구간 ---
+    # --- 8. 영구 웹페이지 공유 버튼 ---
     st.divider()
     st.markdown('<div class="share-btn">', unsafe_allow_html=True)
-    if st.button("🔗 공유용 웹페이지 주소 생성"):
-        new_id = str(uuid.uuid4())[:8]
-        if 'db_storage' not in st.session_state: st.session_state.db_storage = {}
-        st.session_state.db_storage[new_id] = {"name": p['name'], "content": st.session_state.final_plan}
-        # 생성된 주소 출력
-        share_url = f"https://idstring.streamlit.app/?view={new_id}"
-        st.success("주소가 생성되었습니다! (주의: 서버 재시작 시 주소는 만료됩니다)")
-        st.code(share_url, language="text")
+    if st.button("🌐 환자 전달용 영구 웹페이지 링크 생성"):
+        with st.spinner("서류함에 웹페이지 저장 중..."):
+            new_id = str(uuid.uuid4())[:8]
+            now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            patient_str = f"{p['name']}({p['gender']}/{calculate_age(p['birth_year'])}세)"
+            
+            sheet = get_storage_sheet()
+            if sheet:
+                try:
+                    sheet.append_row([new_id, now, patient_str, "Share", st.session_state.final_plan])
+                    share_url = f"{MY_APP_URL}?view={new_id}"
+                    st.success("전용 웹페이지가 생성되었습니다!")
+                    st.code(share_url, language="text")
+                except Exception as e:
+                    st.error(f"저장 실패: {e}")
     st.markdown('</div>', unsafe_allow_html=True)
 
     if st.button("🔄 다음 환자 진료"):
         clear_form()
         st.rerun()
     st.markdown('</div>', unsafe_allow_html=True)
-
-
