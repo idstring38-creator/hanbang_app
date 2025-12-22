@@ -197,7 +197,7 @@ elif st.session_state.step == "result":
         if 'db_storage' not in st.session_state: st.session_state.db_storage = {}
         st.session_state.db_storage[new_id] = {"name": p['name'], "content": st.session_state.final_plan}
         # 생성된 주소 출력
-        share_url = f"https://idstring38.streamlit.app/?view={new_id}"
+        share_url = f"https://idstring.streamlit.app/?view={new_id}"
         st.success("주소가 생성되었습니다! (주의: 서버 재시작 시 주소는 만료됩니다)")
         st.code(share_url, language="text")
     st.markdown('</div>', unsafe_allow_html=True)
@@ -206,4 +206,5 @@ elif st.session_state.step == "result":
         clear_form()
         st.rerun()
     st.markdown('</div>', unsafe_allow_html=True)
+
 
