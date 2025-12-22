@@ -9,16 +9,14 @@ from google.oauth2.service_account import Credentials
 
 # --- 1. 페이지 설정 및 초기화 ---
 st.set_page_config(
-    page_title="한의사 임상 보조 시스템",
+    page_title="한의사 임상 보조 시스템 v2.0",
     page_icon="🩺",
-    layout="centered",
-    initial_sidebar_state="collapsed"
+    layout="centered"
 )
 
+# 세션 상태 초기화
 if 'patient_info' not in st.session_state:
-    st.session_state.patient_info = {"name": "", "gender": "미선택", "age": ""}
-if 'current_time' not in st.session_state:
-    st.session_state.current_time = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    st.session_state.patient_info = {"name": "", "gender": "미선택", "birth_year": ""}
 if 'step' not in st.session_state:
     st.session_state.step = "input" 
 if 'soap_result' not in st.session_state:
@@ -31,19 +29,23 @@ if 'additional_responses' not in st.session_state:
     st.session_state.additional_responses = {} 
 if 'final_plan' not in st.session_state:
     st.session_state.final_plan = ""
-if 'current_model' not in st.session_state:
-    st.session_state.current_model = ""
 
 def clear_form():
     st.session_state.raw_text = ""
-    st.session_state.patient_info = {"name": "", "gender": "미선택", "age": ""}
-    st.session_state.current_time = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    st.session_state.patient_info = {"name": "", "gender": "미선택", "birth_year": ""}
     st.session_state.step = "input"
     st.session_state.soap_result = ""
     st.session_state.follow_up_questions = []
     st.session_state.additional_responses = {}
     st.session_state.final_plan = ""
-    st.session_state.current_model = ""
+
+# 나이 계산 함수
+def calculate_age(birth_year):
+    try:
+        current_year = datetime.datetime.now().year
+        return current_year - int(birth_year) + 1
+    except:
+        return "미상"
 
 # --- 2. 구글 시트 저장 함수 ---
 def save_to_google_sheets(content):
@@ -52,111 +54,94 @@ def save_to_google_sheets(content):
         creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scope)
         client = gspread.authorize(creds)
         sheet = client.open_by_key(st.secrets["spreadsheet_id"]).sheet1
-        sheet_ready_content = re.sub(r'\[이미지:\s*(https?://[^\s\]]+)\]', r'\n(이미지 확인: \1)', content)
         now = datetime.datetime.now()
         p = st.session_state.patient_info
-        patient_str = f"{p['name']}({p['gender']}/{p['age']}세)"
-        row = [now.strftime("%Y-%m-%d"), now.strftime("%H:%M:%S"), patient_str, st.session_state.soap_result[:150], sheet_ready_content]
+        age = calculate_age(p['birth_year'])
+        patient_str = f"{p['name']}({p['gender']}/{p['birth_year']}년생/{age}세)"
+        row = [now.strftime("%Y-%m-%d"), now.strftime("%H:%M:%S"), patient_str, st.session_state.soap_result[:100], content]
         sheet.append_row(row)
         return True
     except Exception as e:
-        st.error(f"구글 시트 저장 중 오류 발생: {e}")
+        st.error(f"시트 저장 실패: {e}")
         return False
 
 # --- 3. 커스텀 CSS ---
 st.markdown("""
     <style>
-    @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;700&display=swap');
-    html, body, [class*="css"] { font-family: 'Noto Sans KR', sans-serif; background-color: #f8fafc; }
-    .stCard { background-color: #ffffff; border-radius: 16px; padding: 25px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); border: 1px solid #e2e8f0; margin-bottom: 20px; }
-    .main-header { text-align: center; margin-bottom: 20px; }
-    .q-item { background-color: #fefce8; border: 1px solid #fef08a; padding: 15px; border-radius: 12px; color: #854d0e; margin-top: 15px; font-size: 1rem; font-weight: 600; line-height: 1.5; }
-    .model-tag { font-size: 0.75rem; color: #64748b; background: #f1f5f9; padding: 2px 8px; border-radius: 4px; margin-bottom: 8px; display: inline-block; }
-    .stButton>button { width: 100%; border-radius: 16px; height: 3.5em; background-color: #2563eb; color: white !important; font-weight: 800; border: none; }
+    .stCard { background-color: #ffffff; border-radius: 16px; padding: 25px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); border: 1px solid #e2e8f0; margin-bottom: 20px; }
+    .q-item { background-color: #fefce8; border: 1px solid #fef08a; padding: 12px; border-radius: 10px; color: #854d0e; margin-top: 10px; font-weight: 500; }
+    .acu-caption { font-size: 1rem !important; font-weight: 700 !important; color: #1e293b !important; text-align: center; background: #f8fafc; padding: 5px; border-radius: 5px; }
+    .stButton>button { border-radius: 12px; font-weight: 700; }
     </style>
     """, unsafe_allow_html=True)
 
 # --- 4. API 클라이언트 설정 ---
-api_keys = []
-if "GEMINI_API_KEY" in st.secrets:
-    raw_keys = st.secrets["GEMINI_API_KEY"]
-    api_keys = raw_keys if isinstance(raw_keys, list) else [raw_keys]
+api_keys = st.secrets.get("GEMINI_API_KEY", [])
+if isinstance(api_keys, str): api_keys = [api_keys]
 
 groq_client = None
-try:
-    groq_client = Groq(api_key=st.secrets["GROQ_API_KEY"])
-except:
-    pass
+try: groq_client = Groq(api_key=st.secrets["GROQ_API_KEY"])
+except: pass
 
 treatment_db_content = st.secrets.get("TREATMENT_DB", "DB 정보가 없습니다.")
 
 # --- 5. 분석 엔진 ---
-def analyze_with_hybrid_fallback(prompt, system_instruction="당신은 노련한 한의사 보조 AI입니다."):
-    gemini_models = ['models/gemini-2.0-flash-exp', 'models/gemini-1.5-flash']
+def analyze_with_hybrid_fallback(prompt):
+    models = ['models/gemini-2.0-flash-exp', 'models/gemini-1.5-flash']
     for api_key in api_keys:
         try:
             genai.configure(api_key=api_key)
-            for model_name in gemini_models:
+            for m in models:
                 try:
-                    model = genai.GenerativeModel(model_name=model_name, system_instruction=system_instruction)
-                    response = model.generate_content(prompt)
-                    if response and response.text:
-                        display_name = model_name.split('/')[-1]
-                        st.session_state.current_model = f"{display_name} (Google)"
-                        return response.text
+                    model = genai.GenerativeModel(m)
+                    res = model.generate_content(prompt)
+                    if res.text: return res.text
                 except: continue
         except: continue
+    
     if groq_client:
         try:
-            model_name = "llama-3.3-70b-versatile"
-            chat_completion = groq_client.chat.completions.create(
-                messages=[{"role": "system", "content": system_instruction}, {"role": "user", "content": prompt}],
-                model=model_name, temperature=0.2,
+            res = groq_client.chat.completions.create(
+                messages=[{"role": "user", "content": prompt}],
+                model="llama-3.3-70b-versatile", temperature=0.2
             )
-            st.session_state.current_model = f"{model_name} (Groq)"
-            return chat_completion.choices[0].message.content
+            return res.choices[0].message.content
         except: pass
-    raise Exception("AI 모델 호출 실패")
+    return "분석 실패"
 
 # --- 6. UI 로직 ---
-st.markdown('<div class="main-header">', unsafe_allow_html=True)
 st.title("🩺 한방 임상 보조 시스템")
-st.markdown('</div>', unsafe_allow_html=True)
 
 if st.session_state.step == "input":
     with st.container():
         st.markdown('<div class="stCard">', unsafe_allow_html=True)
-        st.subheader("👤 환자 정보 입력")
+        st.subheader("👤 환자 정보")
         c1, c2, c3 = st.columns([2, 1, 1])
         with c1: name = st.text_input("이름", placeholder="성함")
         with c2: gender = st.selectbox("성별", ["미선택", "남성", "여성"])
-        with c3: age = st.text_input("나이", placeholder="세")
+        with c3: birth_year = st.text_input("출생년도", placeholder="예: 1985")
+        
         st.divider()
-        st.subheader("📝 증상 및 대화 입력")
-        raw_text = st.text_area("환자의 주소증이나 대화 내용을 입력하세요", height=200, label_visibility="collapsed")
-        if st.button("✨ 1차 분석 및 문진 확인"):
-            if raw_text:
-                st.session_state.patient_info = {"name": name, "gender": gender, "age": age}
-                with st.spinner("분석 중..."):
-                    p = st.session_state.patient_info
+        st.subheader("📝 증상 및 대화")
+        raw_text = st.text_area("환자의 주소증을 입력하세요", height=150)
+        
+        if st.button("✨ 1차 분석 및 문진"):
+            if raw_text and birth_year:
+                st.session_state.patient_info = {"name": name, "gender": gender, "birth_year": birth_year}
+                age = calculate_age(birth_year)
+                with st.spinner("임상 분석 중..."):
                     FIRST_PROMPT = (
-                        f"환자 정보: {p['name']}, {p['gender']}, {p['age']}세\n"
-                        f"위 환자의 대화 원문을 바탕으로 '문진 단계'를 수행하세요. "
-                        f"**지침**: 질문 리스트 작성 시, 한 줄에 하나의 질문만 작성하고 질문 끝에 반드시 물음표(?)를 붙이세요.\n\n"
-                        f"**출력 형식 필수 지침**:\n1. [SOAP 요약]: 요약 내용\n2. [추가 확인 사항]: 질문 리스트\n\n"
-                        f"[대화 원문]: {raw_text}"
+                        f"환자: {name}({gender}, {age}세)\n"
+                        f"대화내용: {raw_text}\n\n"
+                        f"지침: 위 내용을 바탕으로 추가 문진이 필요한 항목을 질문 리스트로 만드세요. "
+                        f"질문은 한 줄에 하나씩 물음표(?)로 끝내야 합니다.\n\n"
+                        f"[SOAP 요약]: ...\n[추가 확인 사항]: 질문들..."
                     )
                     result = analyze_with_hybrid_fallback(FIRST_PROMPT)
                     if "[추가 확인 사항]" in result:
                         parts = result.split("[추가 확인 사항]")
                         st.session_state.soap_result = parts[0].replace("[SOAP 요약]", "").strip()
-                        # 질문 추출 로직: 물음표 기준으로 쪼개거나 불렛포인트 기준으로 쪼갬
-                        raw_questions = re.split(r'\n|(?<=\?)\s*', parts[1].strip())
-                        # 필터링: 질문 형태(? 포함)이면서 너무 짧지 않은 문장만 추출
-                        st.session_state.follow_up_questions = [q.strip() for q in raw_questions if '?' in q and len(q.strip()) > 5]
-                    else:
-                        st.session_state.soap_result = result.replace("[SOAP 요약]", "").strip()
-                        st.session_state.follow_up_questions = []
+                        st.session_state.follow_up_questions = [q.strip() for q in re.split(r'\n|(?<=\?)\s*', parts[1].strip()) if '?' in q]
                     st.session_state.raw_text = raw_text
                     st.session_state.step = "verify"
                     st.rerun()
@@ -165,68 +150,64 @@ if st.session_state.step == "input":
 elif st.session_state.step == "verify":
     st.markdown('<div class="stCard">', unsafe_allow_html=True)
     p = st.session_state.patient_info
-    st.markdown(f"**환자:** {p['name']} ({p['gender']}/{p['age']}세)")
-    st.markdown(f'<div class="model-tag">🤖 분석 모델: {st.session_state.current_model}</div>', unsafe_allow_html=True)
-    st.subheader("🔍 추가 문진")
+    st.write(f"**환자:** {p['name']} ({p['gender']} / {calculate_age(p['birth_year'])}세)")
+    st.subheader("🔍 추가 문진 항목")
     
-    if st.session_state.follow_up_questions:
-        for i, question in enumerate(st.session_state.follow_up_questions):
-            # 질문 텍스트 출력
-            st.markdown(f'<div class="q-item">{question}</div>', unsafe_allow_html=True)
-            # 질문 바로 아래에 대응하는 답변 칸 생성
-            st.session_state.additional_responses[f"q_{i}"] = st.text_input(
-                f"질문 {i+1} 답변", 
-                key=f"ans_{i}", 
-                placeholder="답변을 입력하세요 (미입력 시 특이사항 없음으로 처리)", 
-                label_visibility="collapsed"
-            )
-    else:
-        st.info("추가 확인 사항이 없습니다. 아래 버튼을 눌러 처방을 생성하세요.")
+    for i, q in enumerate(st.session_state.follow_up_questions):
+        st.markdown(f'<div class="q-item">{q}</div>', unsafe_allow_html=True)
+        st.session_state.additional_responses[f"q_{i}"] = st.text_input(f"답변 {i+1}", key=f"ans_{i}", label_visibility="collapsed")
 
-    if st.button("✅ 답변 완료 및 처방 생성"):
-        responses_text = ""
-        for i, q in enumerate(st.session_state.follow_up_questions):
-            ans = st.session_state.additional_responses.get(f"q_{i}", "특이사항 없음")
-            responses_text += f"질문: {q}\n답변: {ans}\n\n"
-        st.session_state.additional_input = responses_text
+    if st.button("✅ 처방 및 치료 계획 수립"):
+        responses = "\n".join([f"질문: {q}\n답변: {st.session_state.additional_responses.get(f'q_{i}', '특이사항 없음')}" for i, q in enumerate(st.session_state.follow_up_questions)])
+        st.session_state.additional_input = responses
         st.session_state.step = "result"
         st.rerun()
     st.markdown('</div>', unsafe_allow_html=True)
 
 elif st.session_state.step == "result":
     if not st.session_state.final_plan:
-        with st.spinner("최종 치료 계획 수립 중..."):
+        with st.spinner("최종 진단 수립 중..."):
             p = st.session_state.patient_info
+            age = calculate_age(p['birth_year'])
             FINAL_PROMPT = (
-                f"[치료 DB]: {treatment_db_content}\n[환자 정보]: {p['name']}, {p['gender']}, {p['age']}세\n"
-                f"[1차 요약]: {st.session_state.soap_result}\n[추가 답변 내역]:\n{st.session_state.additional_input}\n\n"
-                f"종합하여 최종 SOAP 진단과 처방 계획을 수립하세요."
+                f"[치료 DB]: {treatment_db_content}\n"
+                f"[환자 기초정보]: {p['name']}, {p['gender']}, {age}세\n"
+                f"[증상 및 추가답변]: {st.session_state.raw_text}\n{st.session_state.additional_input}\n\n"
+                f"**반드시 다음 형식을 엄격히 지켜 출력하세요**:\n\n"
+                f"1. **[의심되는 질환명]**: 양방/한방 병명을 모두 제시하고, 환자의 증상과 대조하여 추론 과정을 아주 상세히 서술하세요.\n\n"
+                f"2. **[차트정리]**: 환자의 처음 진술과 답변을 요약하되, 사실에만 기반하세요. 마지막엔 '환자에게 안정가료를 지도하고 무리한 동작을 삼갈 것을 권고함. 증상 악화 시 즉시 내원하도록 지도함' 등의 방어적 문구를 포함하세요. 절대 가상의 내용을 쓰지 마세요.\n\n"
+                f"3. **[최종 처방 및 치료 계획]**: 치료 DB의 원리를 적용하여 혈자리를 선택하세요. 특히 **'동측(환측) 취혈'**인지 **'대측(건측) 취혈'**인지 그 원리와 응용법(평형침법, 동씨침법 등 DB 기준)을 명확히 명시하세요.\n\n"
+                f"4. **[혈자리 이미지 가이드]**: 혈자리명 [이미지: URL] 형식으로 마무리하세요."
             )
             st.session_state.final_plan = analyze_with_hybrid_fallback(FINAL_PROMPT)
 
     st.markdown('<div class="stCard">', unsafe_allow_html=True)
     p = st.session_state.patient_info
-    st.markdown(f"**진료 결과:** {p['name']} ({p['gender']}/{p['age']}세)")
-    st.markdown(f'<div class="model-tag">🤖 최종 모델: {st.session_state.current_model}</div>', unsafe_allow_html=True)
-    st.subheader("💡 최종 진단 및 치료 계획")
-    display_text = re.sub(r'\S+\s*/\s*\S+\s*\[이미지:\s*https?:\/\/[^\s\]]+\]', '', st.session_state.final_plan)
-    st.markdown(display_text)
-    img_patterns = re.findall(r'([^\s\[]+(?:\s*/\s*[^\s\[]+)?)\s*\[이미지:\s*(https?:\/\/[^\s\]]+)\]', st.session_state.final_plan)
+    st.write(f"**진료 결과:** {p['name']} ({p['gender']} / {calculate_age(p['birth_year'])}세)")
+    
+    # 결과 텍스트 (이미지 제외하고 출력)
+    clean_display = re.sub(r'\[이미지:\s*https?:\/\/[^\s\]]+\]', '', st.session_state.final_plan)
+    st.markdown(clean_display)
+    
+    # 혈자리 이미지 복구 로직
+    img_patterns = re.findall(r'([^\s\[\n]+)\s*\[이미지:\s*(https?:\/\/[^\s\]]+)\]', st.session_state.final_plan)
     if img_patterns:
         st.divider()
+        st.subheader("📍 치료 혈자리 가이드")
         cols = st.columns(2)
         for idx, (label, url) in enumerate(img_patterns):
             with cols[idx % 2]:
                 st.image(url.strip(), use_container_width=True)
-                st.markdown(f'<div class="acu-caption">{label}</div>', unsafe_allow_html=True)
-    if st.button("📲 모바일 시트 전송"):
+                st.markdown(f'<div class="acu-caption">{label.strip()}</div>', unsafe_allow_html=True)
+    
+    if st.button("📲 모바일 전송"):
         if save_to_google_sheets(st.session_state.final_plan): st.success("전송 완료!")
-    if st.button("🔄 다음 환자 진료"):
+    if st.button("🔄 다음 환자"):
         clear_form()
         st.rerun()
     st.markdown('</div>', unsafe_allow_html=True)
 
 with st.sidebar:
-    if st.button("🏠 홈으로 (초기화)"):
+    if st.button("🏠 초기화"):
         clear_form()
         st.rerun()
