@@ -5,6 +5,7 @@ import datetime
 import uuid
 import gspread
 from google.oauth2.service_account import Credentials
+import streamlit.components.v1 as components  # 카카오톡 전송 기능을 위한 컴포넌트 추가
 
 # --- 1. 페이지 설정 및 세션 초기화 ---
 st.set_page_config(page_title="한방 임상 보조 시스템", page_icon="🩺", layout="centered")
@@ -29,13 +30,11 @@ def get_storage_sheet():
 
 # --- 헬퍼 함수: 텍스트 내 이미지 태그를 HTML img로 변환 ---
 def render_text_with_images(text):
-    # [이미지: URL] 패턴을 찾아서 <img src="..."> 태그로 변환
-    # 모바일 화면 너비에 맞게 width 100% 설정 및 스타일 적용
     pattern = r'\[이미지:\s*(https?://[^\s\]]+)\]'
     replacement = r'<br><img src="\1" style="width: 100%; max-width: 400px; border-radius: 10px; margin: 10px 0; box-shadow: 0 2px 5px rgba(0,0,0,0.1);"><br>'
     return re.sub(pattern, replacement, text)
 
-# --- 3. [공유 모드 확인 - 수정됨] ---
+# --- 3. [공유 모드 확인] ---
 query_params = st.query_params
 shared_id = query_params.get("view")
 
@@ -48,14 +47,9 @@ if shared_id:
                 row_data = sheet.row_values(cell.row)
                 st.markdown(f"### 🩺 {row_data[2]}님 최종 진단결과")
                 st.markdown('<div style="background-color: white; padding: 25px; border-radius: 16px; border: 1px solid #e2e8f0;">', unsafe_allow_html=True)
-                
-                # 저장된 원본 텍스트 가져오기
                 raw_content = row_data[4].replace("```html", "").replace("```", "")
-                
-                # [수정 1] 이미지 태그를 HTML로 변환하여 렌더링 (모바일 즉시 보기 지원)
                 processed_content = render_text_with_images(raw_content)
                 st.markdown(processed_content, unsafe_allow_html=True)
-                
                 st.markdown('</div>', unsafe_allow_html=True)
         except: st.error("기록을 찾을 수 없습니다.")
     
@@ -69,7 +63,6 @@ if shared_id:
 st.markdown("""
     <style>
     .stCard { background-color: #ffffff; border-radius: 16px; padding: 25px; border: 1px solid #e2e8f0; margin-bottom: 20px; }
-    
     .result-title { 
         color: #0056b3 !important; 
         font-size: 1.5rem !important; 
@@ -83,7 +76,6 @@ st.markdown("""
         padding-bottom: 8px;
         border-radius: 0 5px 5px 0;
     }
-    
     div.stButton > button {
         background-color: #1d4ed8 !important; color: white !important;
         font-size: 1.1rem !important; font-weight: 700 !important;
@@ -91,7 +83,6 @@ st.markdown("""
         border-radius: 12px !important; border: none !important;
         box-shadow: 0 4px 10px rgba(29, 78, 216, 0.2) !important;
     }
-    
     .q-item { background-color: #f8fafc; padding: 15px; border-radius: 10px; border-left: 5px solid #3b82f6; margin-top: 10px; font-weight: 600; }
     .section-gap { margin-bottom: 30px; }
     </style>
@@ -150,7 +141,6 @@ elif st.session_state.step == "result":
             ans_str = "\n".join([f"Q: {q} A: {st.session_state.responses.get(f'q_{i}', '')}" for i, q in enumerate(st.session_state.follow_up_questions)])
             db_content = st.secrets.get("TREATMENT_DB", "")
             
-            # [수정 2 & 3] 프롬프트 강화 (DB 준수 및 차트 형식 지정)
             FINAL_PROMPT = f"""
             [TREATMENT_DB]:
             {db_content}
@@ -160,27 +150,11 @@ elif st.session_state.step == "result":
             문진결과: {ans_str}
 
             [작성 지침 - 엄격 준수]:
-            1. **[차트 정리]**: 실제 의무기록부(EMR)에 복사하여 붙여넣을 수 있도록 아래 포맷으로 간결하고 전문적으로 작성하시오.
-               - C/C (주소증):
-               - O/S (현병력): 발병일, 계기, 증상 양상 포함
-               - P/H (과거력/특이사항): 문진 내용 요약
-               - Imp (진단명): 한의학적 변증명 (예: 간울기체, 비위습열 등) 및 U코드
-               - Tx Plan (치료계획): 주요 치료 혈자리 나열
-               - Note: (법적 방어를 위한 진료 기록 및 환자 교육 내용 필수 포함)
-
-            2. **[혈자리 처방]**: 
-               - **매우 중요**: 처방하는 혈자리는 반드시 상단에 제공된 [TREATMENT_DB]에 존재하는 혈자리여야 합니다. 
-               - **DB에 없는 혈자리는 절대 임의로 창작하거나 추천하지 마십시오.**
-               - DB에 해당 증상에 대한 정확한 혈자리가 없다면, 가장 유사한 카테고리의 혈자리를 추천하고 그 이유를 설명하십시오.
-
-            3. **[혈자리 가이드]**:
-               - 형식: "(동측/대측) 혈자리이름(코드) [이미지: URL]" 
-               - 이미지 URL은 깃허브 원본 주소를 그대로 사용할 것. (예: https://raw.githubusercontent.com/...)
-               - 설명이 아닌 '목록' 형태로 나열하시오.
-
-            [출력 형식]:
-            모든 대제목은 <div class='result-title'>제목명</div>을 사용하고, 섹션 끝에는 <div class='section-gap'></div>를 추가하시오.
-            순서: **[차트 정리]**, **[변증 및 진단 상세]**, **[혈자리 처방]**, **[혈자리 가이드]**
+            1. **[차트 정리]**: EMR 포맷 준수.
+            2. **[혈자리 처방]**: DB 내 혈자리만 사용.
+            3. **[혈자리 가이드]**: 이미지 URL 포함 나열.
+            
+            [출력 형식]: 모든 대제목은 <div class='result-title'>제목명</div> 사용.
             """
             
             genai.configure(api_key=st.secrets["GEMINI_API_KEY"][0])
@@ -190,29 +164,66 @@ elif st.session_state.step == "result":
             new_id = str(uuid.uuid4())[:8]
             sheet = get_storage_sheet()
             if sheet:
-                # 시트 저장 시점
                 sheet.append_row([new_id, datetime.datetime.now().strftime("%Y-%m-%d %H:%M"), f"{p['name']}", "자동", st.session_state.final_plan])
                 st.session_state.shared_link = f"{MY_APP_URL}?view={new_id}"
 
     st.markdown('<div class="stCard">', unsafe_allow_html=True)
     st.subheader(f"📋 {st.session_state.patient_info['name']}님 최종진단")
     
-    # 1. 결과 출력 (이미지 렌더링 함수 적용)
     raw_plan = st.session_state.final_plan.replace("```html", "").replace("```", "")
     processed_plan = render_text_with_images(raw_plan)
     st.markdown(processed_plan, unsafe_allow_html=True)
 
-    # [수정 4] 공유 주소 복사 UI 개선
     if st.session_state.shared_link:
         st.divider()
         st.markdown("### 🔗 환자용 공유 링크")
-        st.info("아래 주소 박스 오른쪽 끝의 '복사 아이콘'을 누르면 클립보드에 복사됩니다.")
-        
-        # Streamlit의 st.code는 기본적으로 우측 상단에 복사 버튼을 제공합니다.
-        # 이를 버튼처럼 보이게 하기 위해 UI적으로 배치합니다.
         st.code(st.session_state.shared_link, language=None)
         
-        st.caption("※ 이 링크를 카카오톡 등으로 환자에게 전달하세요. 별도의 로그인 없이 결과를 볼 수 있습니다.")
+        # --- 카카오톡 전송 버튼 추가 ---
+        kakao_js_key = st.secrets.get("JAVASCRIPT_KEY", "")
+        patient_name = st.session_state.patient_info['name']
+        
+        kakao_button_html = f"""
+        <script src="https://t1.kakaocdn.net/kakao_js_sdk/2.7.0/kakao.min.js"></script>
+        <script>
+            if (!Kakao.isInitialized()) {{
+                Kakao.init('{kakao_js_key}');
+            }}
+            function sendToKakao() {{
+                Kakao.Share.sendDefault({{
+                    objectType: 'text',
+                    text: '[한방 임상 보조 시스템]\\n{patient_name}님 진료 결과입니다. 아래 링크를 통해 확인하세요.',
+                    link: {{
+                        mobileWebUrl: '{st.session_state.shared_link}',
+                        webUrl: '{st.session_state.shared_link}',
+                    }},
+                }});
+            }}
+        </script>
+        <div style="display: flex; justify-content: center; margin-top: 10px;">
+            <button onclick="sendToKakao()" style="
+                background-color: #FEE500;
+                color: #191919;
+                border: none;
+                border-radius: 12px;
+                padding: 15px 25px;
+                font-size: 16px;
+                font-weight: bold;
+                cursor: pointer;
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                width: 100%;
+                justify-content: center;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            ">
+                <img src="https://developers.kakao.com/assets/img/about/logos/kakaotalksharing/kakaotalk_sharing_btn_medium.png" width="24" height="24">
+                내 카톡에 전송 / 환자에게 공유
+            </button>
+        </div>
+        """
+        components.html(kakao_button_html, height=100)
+        st.caption("※ '내 카톡에 전송'을 눌러 나에게 보내거나, 환자를 선택해 바로 전송할 수 있습니다.")
 
     st.divider()
     if st.button("🔄 다음 환자 진료 시작 (초기화)"):
