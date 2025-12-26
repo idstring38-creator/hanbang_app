@@ -27,7 +27,15 @@ def get_storage_sheet():
         return client.open_by_key(st.secrets["spreadsheet_id"]).sheet1
     except: return None
 
-# --- 3. [공유 모드 확인] ---
+# --- 헬퍼 함수: 텍스트 내 이미지 태그를 HTML img로 변환 ---
+def render_text_with_images(text):
+    # [이미지: URL] 패턴을 찾아서 <img src="..."> 태그로 변환
+    # 모바일 화면 너비에 맞게 width 100% 설정 및 스타일 적용
+    pattern = r'\[이미지:\s*(https?://[^\s\]]+)\]'
+    replacement = r'<br><img src="\1" style="width: 100%; max-width: 400px; border-radius: 10px; margin: 10px 0; box-shadow: 0 2px 5px rgba(0,0,0,0.1);"><br>'
+    return re.sub(pattern, replacement, text)
+
+# --- 3. [공유 모드 확인 - 수정됨] ---
 query_params = st.query_params
 shared_id = query_params.get("view")
 
@@ -38,54 +46,59 @@ if shared_id:
             cell = sheet.find(shared_id)
             if cell:
                 row_data = sheet.row_values(cell.row)
-                st.markdown(f"### 🩺 {row_data[2]} 최종진단")
+                st.markdown(f"### 🩺 {row_data[2]}님 최종 진단결과")
                 st.markdown('<div style="background-color: white; padding: 25px; border-radius: 16px; border: 1px solid #e2e8f0;">', unsafe_allow_html=True)
-                display_html = row_data[4].replace("```html", "").replace("```", "")
-                st.markdown(display_html, unsafe_allow_html=True)
+                
+                # 저장된 원본 텍스트 가져오기
+                raw_content = row_data[4].replace("```html", "").replace("```", "")
+                
+                # [수정 1] 이미지 태그를 HTML로 변환하여 렌더링 (모바일 즉시 보기 지원)
+                processed_content = render_text_with_images(raw_content)
+                st.markdown(processed_content, unsafe_allow_html=True)
+                
                 st.markdown('</div>', unsafe_allow_html=True)
         except: st.error("기록을 찾을 수 없습니다.")
-    if st.button("🏠 메인으로"):
+    
+    st.write("")
+    if st.button("🏠 새로운 진단하러 가기"):
         st.query_params.clear()
         st.rerun()
     st.stop()
 
-# --- 4. 커스텀 CSS (강조된 제목 및 여백) ---
+# --- 4. 커스텀 CSS ---
 st.markdown("""
     <style>
     .stCard { background-color: #ffffff; border-radius: 16px; padding: 25px; border: 1px solid #e2e8f0; margin-bottom: 20px; }
     
-    /* 항목 제목 스타일: 더 크고, 두껍고, 선명한 파란색 */
     .result-title { 
         color: #0056b3 !important; 
-        font-size: 1.8rem !important; 
+        font-size: 1.5rem !important; 
         font-weight: 900 !important; 
-        border-left: 8px solid #0056b3; 
-        padding-left: 15px;
-        margin-top: 50px !important; /* 항목 간 충분한 여백 */
-        margin-bottom: 20px !important;
-        background-color: #f0f7ff;
-        padding-top: 10px;
-        padding-bottom: 10px;
-        border-radius: 4px;
+        border-left: 6px solid #0056b3; 
+        padding-left: 12px;
+        margin-top: 40px !important; 
+        margin-bottom: 15px !important;
+        background-color: #f8fbff;
+        padding-top: 8px;
+        padding-bottom: 8px;
+        border-radius: 0 5px 5px 0;
     }
     
     div.stButton > button {
         background-color: #1d4ed8 !important; color: white !important;
-        font-size: 1.3rem !important; font-weight: 800 !important;
-        height: 4em !important; width: 100% !important;
-        border-radius: 15px !important; border: none !important;
-        box-shadow: 0 4px 15px rgba(29, 78, 216, 0.3) !important;
+        font-size: 1.1rem !important; font-weight: 700 !important;
+        height: 3.5em !important; width: 100% !important;
+        border-radius: 12px !important; border: none !important;
+        box-shadow: 0 4px 10px rgba(29, 78, 216, 0.2) !important;
     }
     
     .q-item { background-color: #f8fafc; padding: 15px; border-radius: 10px; border-left: 5px solid #3b82f6; margin-top: 10px; font-weight: 600; }
-    
-    /* 섹션 간 줄바꿈 효과 */
-    .section-gap { margin-bottom: 40px; }
+    .section-gap { margin-bottom: 30px; }
     </style>
     """, unsafe_allow_html=True)
 
 def calculate_age(birth_year):
-    try: return 2025 - int(birth_year) + 1
+    try: return datetime.date.today().year - int(birth_year) + 1
     except: return "미상"
 
 # --- 5. UI 로직 ---
@@ -97,57 +110,79 @@ if st.session_state.step == "input":
     with c1: name = st.text_input("이름", placeholder="성함")
     with c2: gender = st.selectbox("성별", ["남성", "여성", "미선택"])
     with c3: birth_year = st.text_input("출생년도", placeholder="예: 1985")
-    raw_text = st.text_area("주소증 입력", height=150)
+    raw_text = st.text_area("주소증 입력", height=150, placeholder="환자의 주요 증상을 최대한 자세히 입력해주세요.")
     
     if st.button("✨ 분석 시작 및 문진 생성"):
         if raw_text:
             st.session_state.patient_info = {"name": name, "gender": gender, "birth_year": birth_year}
-            with st.spinner("AI가 분석 중입니다..."):
+            with st.spinner("증상을 분석하여 핵심 질문을 생성하고 있습니다..."):
                 genai.configure(api_key=st.secrets["GEMINI_API_KEY"][0])
                 model = genai.GenerativeModel('models/gemini-2.0-flash-exp')
-                PROMPT = f"환자: {name}, 증상: {raw_text}\n[지침]: 변증을 위해 질문 5개 이상 필수 생성. ?로 끝나는 질문 리스트.\n[추가 확인 사항]: 질문들..."
+                PROMPT = f"환자: {name}, 증상: {raw_text}\n[지침]: 한의학적 변증을 위해 꼭 필요한 예리한 질문 5가지를 생성하시오. 각 질문은 물음표(?)로 끝나야 함."
                 try:
                     res = model.generate_content(PROMPT).text
-                    qs = [q.strip() for q in re.split(r'\n|(?<=\?)\s*', res.split("[추가 확인 사항]")[-1]) if '?' in q]
-                    defaults = ["증상 발생 시기?", "통증 양상?", "소화/배변?", "수면/컨디션?", "악화 조건?"]
+                    qs = [q.strip() for q in re.split(r'\n|(?<=\?)\s*', res) if '?' in q]
+                    defaults = ["증상 발생 시기는 언제부터인가요?", "통증의 양상(찌르는 듯, 묵직함 등)은 어떤가요?", "소화 상태와 대변 양상은 어떤가요?", "수면 상태와 평소 컨디션은 어떤가요?", "증상이 악화되거나 완화되는 조건이 있나요?"]
                     st.session_state.follow_up_questions = (qs + defaults)[:max(5, len(qs))]
                     st.session_state.raw_text = raw_text
                     st.session_state.step = "verify"
                     st.rerun()
-                except: st.error("API 연결 실패")
+                except: st.error("API 연결 실패. 잠시 후 다시 시도해주세요.")
     st.markdown('</div>', unsafe_allow_html=True)
 
 elif st.session_state.step == "verify":
     st.markdown('<div class="stCard">', unsafe_allow_html=True)
     st.subheader("🔍 정밀 문진")
+    st.info("AI가 환자의 증상을 바탕으로 생성한 추가 질문입니다.")
     for i, q in enumerate(st.session_state.follow_up_questions):
         st.markdown(f'<div class="q-item">{i+1}. {q}</div>', unsafe_allow_html=True)
         st.session_state.responses[f"q_{i}"] = st.text_input(f"답변 {i+1}", key=f"ans_{i}")
     
-    if st.button("✅ 심층 진단 생성"):
+    if st.button("✅ 심층 진단 및 처방 생성"):
         st.session_state.step = "result"
         st.rerun()
 
 elif st.session_state.step == "result":
     if not st.session_state.final_plan:
-        with st.spinner("최종 진단 리포트를 작성 중입니다..."):
+        with st.spinner("데이터베이스를 대조하여 최적의 치료 혈자리를 선정 중입니다..."):
             p = st.session_state.patient_info
             age = calculate_age(p['birth_year'])
             ans_str = "\n".join([f"Q: {q} A: {st.session_state.responses.get(f'q_{i}', '')}" for i, q in enumerate(st.session_state.follow_up_questions)])
             db_content = st.secrets.get("TREATMENT_DB", "")
             
+            # [수정 2 & 3] 프롬프트 강화 (DB 준수 및 차트 형식 지정)
             FINAL_PROMPT = f"""
-            [TREATMENT_DB]: {db_content}
-            환자: {p['name']}({p['gender']}, {age}세) / 증상: {st.session_state.raw_text} / 답변: {ans_str}
+            [TREATMENT_DB]:
+            {db_content}
+            
+            환자정보: {p['name']}({p['gender']}, {age}세)
+            주소증: {st.session_state.raw_text}
+            문진결과: {ans_str}
 
-            [지침]:
-            1. 모든 대제목은 <div class='result-title'>제목명</div>을 사용하며, 제목 뒤에 <div class='section-gap'></div>를 추가해라.
-            2. **[환자 정보 요약]**, **[차트 정리]**, **[변증 및 진단]**, **[혈자리 처방]**, **[추가 혈자리 권유]**, **[혈자리 가이드]** 순서로 작성.
-            3. [차트 정리]에 법적 방어 문구 필수 포함.
-            4. [변증 및 진단]은 500자 이상 심층 기술, U코드 사용.
-            5. [혈자리 처방]은 DB 근거, 혈자리마다 <br> 줄바꿈.
-            6. [혈자리 가이드] 형식: "(동측/대측) 혈자리이름 [이미지: URL]" (이미지 URL은 대괄호 안에 정확히 기재)
+            [작성 지침 - 엄격 준수]:
+            1. **[차트 정리]**: 실제 의무기록부(EMR)에 복사하여 붙여넣을 수 있도록 아래 포맷으로 간결하고 전문적으로 작성하시오.
+               - C/C (주소증):
+               - O/S (현병력): 발병일, 계기, 증상 양상 포함
+               - P/H (과거력/특이사항): 문진 내용 요약
+               - Imp (진단명): 한의학적 변증명 (예: 간울기체, 비위습열 등) 및 U코드
+               - Tx Plan (치료계획): 주요 치료 혈자리 나열
+               - Note: (법적 방어를 위한 진료 기록 및 환자 교육 내용 필수 포함)
+
+            2. **[혈자리 처방]**: 
+               - **매우 중요**: 처방하는 혈자리는 반드시 상단에 제공된 [TREATMENT_DB]에 존재하는 혈자리여야 합니다. 
+               - **DB에 없는 혈자리는 절대 임의로 창작하거나 추천하지 마십시오.**
+               - DB에 해당 증상에 대한 정확한 혈자리가 없다면, 가장 유사한 카테고리의 혈자리를 추천하고 그 이유를 설명하십시오.
+
+            3. **[혈자리 가이드]**:
+               - 형식: "(동측/대측) 혈자리이름(코드) [이미지: URL]" 
+               - 이미지 URL은 깃허브 원본 주소를 그대로 사용할 것. (예: https://raw.githubusercontent.com/...)
+               - 설명이 아닌 '목록' 형태로 나열하시오.
+
+            [출력 형식]:
+            모든 대제목은 <div class='result-title'>제목명</div>을 사용하고, 섹션 끝에는 <div class='section-gap'></div>를 추가하시오.
+            순서: **[차트 정리]**, **[변증 및 진단 상세]**, **[혈자리 처방]**, **[혈자리 가이드]**
             """
+            
             genai.configure(api_key=st.secrets["GEMINI_API_KEY"][0])
             model = genai.GenerativeModel('models/gemini-2.0-flash-exp')
             st.session_state.final_plan = model.generate_content(FINAL_PROMPT).text
@@ -155,53 +190,32 @@ elif st.session_state.step == "result":
             new_id = str(uuid.uuid4())[:8]
             sheet = get_storage_sheet()
             if sheet:
+                # 시트 저장 시점
                 sheet.append_row([new_id, datetime.datetime.now().strftime("%Y-%m-%d %H:%M"), f"{p['name']}", "자동", st.session_state.final_plan])
                 st.session_state.shared_link = f"{MY_APP_URL}?view={new_id}"
 
     st.markdown('<div class="stCard">', unsafe_allow_html=True)
-    st.subheader(f"📋 {st.session_state.patient_info['name']} 최종진단")
+    st.subheader(f"📋 {st.session_state.patient_info['name']}님 최종진단")
     
-    # --- 출력 로직 보완 ---
+    # 1. 결과 출력 (이미지 렌더링 함수 적용)
     raw_plan = st.session_state.final_plan.replace("```html", "").replace("```", "")
-    
-    # 1. 혈자리 가이드 분리
-    parts = raw_plan.split("<div class='result-title'>혈자리 가이드</div>")
-    main_content = parts[0]
-    st.markdown(main_content, unsafe_allow_html=True)
+    processed_plan = render_text_with_images(raw_plan)
+    st.markdown(processed_plan, unsafe_allow_html=True)
 
-    if len(parts) > 1:
-        st.markdown("<div class='result-title'>혈자리 가이드</div>", unsafe_allow_html=True)
-        guide_text = parts[1]
-        
-        # 2. 이미지 URL 추출 및 텍스트 정제 (정규표현식 강화)
-        img_patterns = re.findall(r'(\((?:동측|대측)\)\s*[가-힣0-9a-zA-Z\s]+)\s*\[이미지:\s*(https?://[^\s\]]+)\]', guide_text)
-        
-        # 이미지 태그를 제거한 순수 텍스트 먼저 출력
-        clean_text = re.sub(r'\[이미지:\s*https?://[^\s\]]+\]', '', guide_text)
-        st.markdown(clean_text, unsafe_allow_html=True)
-        
-        # 3. 추출된 이미지 실제 렌더링
-        if img_patterns:
-            st.write("---")
-            cols = st.columns(2)
-            for idx, (label, url) in enumerate(img_patterns):
-                with cols[idx % 2]:
-                    st.image(url.strip(), use_container_width=True)
-                    st.markdown(f"<div style='text-align:center; font-weight:bold; color:#0056b3;'>{label}</div>", unsafe_allow_html=True)
-
-    # 4. 환자 공유 주소 및 복사 버튼
+    # [수정 4] 공유 주소 복사 UI 개선
     if st.session_state.shared_link:
         st.divider()
-        st.markdown("### 🔗 환자용 공유 주소")
-        col_link, col_copy = st.columns([4, 1])
-        with col_link:
-            st.text_input("공유 링크", st.session_state.shared_link, label_visibility="collapsed")
-        with col_copy:
-            # st.code는 내장 복사 버튼을 제공하므로 가장 효율적
-            st.code(st.session_state.shared_link, language=None)
-            st.caption("위 박스 우측 버튼을 클릭하여 복사")
+        st.markdown("### 🔗 환자용 공유 링크")
+        st.info("아래 주소 박스 오른쪽 끝의 '복사 아이콘'을 누르면 클립보드에 복사됩니다.")
+        
+        # Streamlit의 st.code는 기본적으로 우측 상단에 복사 버튼을 제공합니다.
+        # 이를 버튼처럼 보이게 하기 위해 UI적으로 배치합니다.
+        st.code(st.session_state.shared_link, language=None)
+        
+        st.caption("※ 이 링크를 카카오톡 등으로 환자에게 전달하세요. 별도의 로그인 없이 결과를 볼 수 있습니다.")
 
-    if st.button("🔄 다음 환자 진료 시작"):
+    st.divider()
+    if st.button("🔄 다음 환자 진료 시작 (초기화)"):
         for key in list(st.session_state.keys()): del st.session_state[key]
         st.rerun()
     st.markdown('</div>', unsafe_allow_html=True)
