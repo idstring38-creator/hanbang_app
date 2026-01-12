@@ -1,342 +1,402 @@
 import streamlit as st
-import google.generativeai as genai 
+from google import genai
 import re
 import datetime
-import uuid
+import time
+from groq import Groq
 import gspread
 from google.oauth2.service_account import Credentials
-import streamlit.components.v1 as components
-from groq import Groq # Groq 라이브러리 필수
 
 # --- 1. 페이지 설정 및 초기화 ---
 st.set_page_config(
-    page_title="한의사 임상 보조 시스템", 
-    page_icon="🩺", 
+    page_title="한의사 임상 보조 시스템",
+    page_icon="🩺",
     layout="centered",
     initial_sidebar_state="collapsed"
 )
 
 # 세션 상태 초기화
-for key in ['step', 'patient_info', 'follow_up_questions', 'responses', 'final_plan', 'shared_link', 'raw_text', 'current_model']:
-    if key not in st.session_state:
-        if key == 'step': st.session_state[key] = "input"
-        elif key == 'patient_info': st.session_state[key] = {"name": "", "gender": "미선택", "birth_year": ""}
-        elif key in ['follow_up_questions', 'responses']: st.session_state[key] = [] if key=='follow_up_questions' else {}
-        else: st.session_state[key] = ""
+if 'patient_count' not in st.session_state:
+    st.session_state.patient_count = 1
+if 'current_time' not in st.session_state:
+    st.session_state.current_time = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+if 'step' not in st.session_state:
+    st.session_state.step = "input" 
+if 'soap_result' not in st.session_state:
+    st.session_state.soap_result = ""
+if 'follow_up_questions' not in st.session_state:
+    st.session_state.follow_up_questions = [] 
+if 'raw_text' not in st.session_state:
+    st.session_state.raw_text = ""
+if 'additional_responses' not in st.session_state:
+    st.session_state.additional_responses = {} 
+if 'final_plan' not in st.session_state:
+    st.session_state.final_plan = ""
+if 'current_model' not in st.session_state:
+    st.session_state.current_model = ""
 
-MY_APP_URL = "https://idstring.streamlit.app/" 
+def clear_form():
+    st.session_state.raw_text = ""
+    st.session_state.current_time = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    st.session_state.patient_count += 1
+    st.session_state.step = "input"
+    st.session_state.soap_result = ""
+    st.session_state.follow_up_questions = []
+    st.session_state.additional_responses = {}
+    st.session_state.final_plan = ""
+    st.session_state.current_model = ""
 
-# --- 2. API 클라이언트 및 DB 설정 (오류 해결의 핵심) ---
+# --- 2. 구글 시트 저장 함수 ---
+def save_to_google_sheets(content):
+    try:
+        scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+        creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scope)
+        client = gspread.authorize(creds)
+        
+        sheet = client.open_by_key(st.secrets["spreadsheet_id"]).sheet1
+        
+        # 시트용 텍스트 가공: 이미지 태그 제거 및 줄바꿈 정리
+        sheet_content = re.sub(r'\[이미지:.*?\]', '', content)
+        
+        now = datetime.datetime.now()
+        row = [
+            now.strftime("%Y-%m-%d"),
+            now.strftime("%H:%M:%S"),
+            st.session_state.patient_count,
+            st.session_state.soap_result[:150], 
+            sheet_content.strip() 
+        ]
+        sheet.append_row(row)
+        return True
+    except Exception as e:
+        st.error(f"구글 시트 저장 중 오류 발생: {e}")
+        return False
 
-# (1) Gemini API 키 로드 (리스트/문자열 모두 대응)
+# --- 3. 커스텀 CSS ---
+st.markdown("""
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;700&display=swap');
+    
+    html, body, [class*="css"] {
+        font-family: 'Noto Sans KR', sans-serif;
+        background-color: #f8fafc;
+    }
+    
+    .stCard {
+        background-color: #ffffff;
+        border-radius: 16px;
+        padding: 24px;
+        box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);
+        border: 1px solid #e2e8f0;
+        margin-bottom: 20px;
+    }
+    
+    .main-header {
+        text-align: center;
+        margin-bottom: 20px;
+    }
+    
+    .soap-box {
+        background-color: #f1f5f9;
+        border-left: 5px solid #3b82f6;
+        padding: 12px;
+        border-radius: 8px;
+        margin-bottom: 15px;
+        white-space: pre-wrap;
+        font-size: 0.95rem;
+        line-height: 1.6;
+    }
+
+    .stButton>button {
+        width: 100%;
+        border-radius: 16px;
+        height: 3.5em;
+        background-color: #2563eb;
+        color: white !important;
+        font-weight: 800;
+        border: none;
+        box-shadow: 0 4px 10px rgba(37, 99, 235, 0.2);
+    }
+    
+    .verify-btn>button {
+        background-color: #059669 !important;
+        box-shadow: 0 4px 10px rgba(5, 150, 105, 0.2) !important;
+    }
+
+    .q-item {
+        background-color: #fffbeb;
+        border: 1px solid #fde68a;
+        padding: 12px;
+        border-radius: 10px;
+        color: #92400e;
+        margin-top: 10px;
+        font-size: 0.95rem;
+        font-weight: 500;
+    }
+    
+    .model-tag {
+        font-size: 0.75rem;
+        color: #64748b;
+        background: #f1f5f9;
+        padding: 2px 8px;
+        border-radius: 4px;
+        margin-bottom: 8px;
+        display: inline-block;
+    }
+    
+    .acu-caption {
+        font-size: 1.1rem !important;
+        font-weight: 700 !important;
+        color: #0f172a !important; 
+        text-align: center;
+        margin-top: 5px;
+    }
+    
+    h3 {
+        color: #1e3a8a;
+        border-bottom: 2px solid #e2e8f0;
+        padding-bottom: 8px;
+        margin-top: 20px;
+        margin-bottom: 15px;
+        font-size: 1.3rem;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+# --- 4. API 클라이언트 설정 ---
 api_keys = []
 if "GEMINI_API_KEYS" in st.secrets:
-    raw = st.secrets["GEMINI_API_KEYS"]
-    api_keys = raw if isinstance(raw, list) else [k.strip() for k in str(raw).split(",") if k.strip()]
+    raw_keys = st.secrets["GEMINI_API_KEYS"]
+    if isinstance(raw_keys, list):
+        api_keys = raw_keys
+    else:
+        api_keys = [k.strip() for k in str(raw_keys).split(",") if k.strip()]
 elif "GEMINI_API_KEY" in st.secrets:
-    raw = st.secrets["GEMINI_API_KEY"]
-    api_keys = raw if isinstance(raw, list) else [raw]
+    api_keys = [st.secrets["GEMINI_API_KEY"]]
 
-# (2) Groq 클라이언트
 groq_client = None
 try:
     groq_client = Groq(api_key=st.secrets["GROQ_API_KEY"])
 except:
     pass
 
-# (3) 치료법 DB 로드
 try:
     treatment_db_content = st.secrets["TREATMENT_DB"]
 except:
     st.error("⚠️ TREATMENT_DB 설정이 필요합니다.")
     st.stop()
 
-# (4) 구글 시트 연동
-def get_storage_sheet():
-    try:
-        scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-        creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scope)
-        client = gspread.authorize(creds)
-        return client.open_by_key(st.secrets["spreadsheet_id"]).sheet1
-    except: return None
-
-# --- 3. 하이브리드 분석 엔진 (핵심 로직) ---
+# --- 5. 분석 엔진 ---
 def analyze_with_hybrid_fallback(prompt, system_instruction="당신은 노련한 한의사 보조 AI입니다."):
-    # 1순위: Gemini 모델들 (2.0 -> 1.5)
     gemini_models = ['gemini-2.0-flash-exp', 'gemini-1.5-flash']
     
-    # 키 로테이션 및 모델 순회
     for api_key in api_keys:
         try:
-            genai.configure(api_key=api_key)
-            for model_name in gemini_models:
+            client = genai.Client(api_key=api_key)
+            for model_id in gemini_models:
                 try:
-                    model = genai.GenerativeModel(
-                        model_name,
-                        system_instruction=system_instruction
+                    response = client.models.generate_content(
+                        model=model_id, 
+                        contents=prompt,
+                        config={'system_instruction': system_instruction}
                     )
-                    response = model.generate_content(prompt)
                     if response and response.text:
-                        st.session_state.current_model = f"{model_name} (Google)"
+                        st.session_state.current_model = f"{model_id} (Active)"
                         return response.text
                 except Exception:
-                    continue # 다음 모델 시도
+                    continue
         except Exception:
-            continue # 다음 키 시도
-
-    # 2순위: Groq (Google 실패 시)
+            continue
+            
     if groq_client:
         try:
+            model_name = "llama-3.3-70b-versatile"
             chat_completion = groq_client.chat.completions.create(
                 messages=[
-                    {"role": "system", "content": f"{system_instruction} DB를 엄격히 준수하세요."},
+                    {"role": "system", "content": f"{system_instruction}\nDB를 엄격히 준수하고 논리적으로 분석하세요."},
                     {"role": "user", "content": prompt}
                 ],
-                model="llama-3.3-70b-versatile",
-                temperature=0.3,
+                model=model_name,
+                temperature=0.2,
             )
-            st.session_state.current_model = "Llama-3.3 (Groq)"
+            st.session_state.current_model = f"{model_name} (Fallback)"
             return chat_completion.choices[0].message.content
         except Exception as e:
-            st.error(f"Groq 오류: {e}")
-
-    raise Exception("모든 AI 엔진 연결 실패 (키/할당량 확인 필요)")
-
-# --- 헬퍼 함수 ---
-def render_text_with_images(text):
-    pattern = r'\[이미지:\s*(https?://[^\s\]]+)\]'
-    replacement = r'<br><img src="\1" style="width: 100%; max-width: 400px; border-radius: 10px; margin: 10px 0; box-shadow: 0 2px 5px rgba(0,0,0,0.1);"><br>'
-    return re.sub(pattern, replacement, text)
-
-# --- 4. [공유 모드 확인] ---
-query_params = st.query_params
-shared_id = query_params.get("view")
-
-if shared_id:
-    sheet = get_storage_sheet()
-    if sheet:
-        try:
-            cell = sheet.find(shared_id)
-            if cell:
-                row_data = sheet.row_values(cell.row)
-                st.markdown(f"### 🩺 {row_data[2]}님 최종 진단결과")
-                st.markdown('<div style="background-color: white; padding: 25px; border-radius: 16px; border: 1px solid #e2e8f0;">', unsafe_allow_html=True)
-                raw_content = row_data[4].replace("```html", "").replace("```", "")
-                processed_content = render_text_with_images(raw_content)
-                st.markdown(processed_content, unsafe_allow_html=True)
-                st.markdown('</div>', unsafe_allow_html=True)
-        except: st.error("기록을 찾을 수 없습니다.")
+            st.error(f"Groq 호출 실패: {e}")
     
-    st.write("")
-    if st.button("🏠 새로운 진단하러 가기"):
-        st.query_params.clear()
-        st.rerun()
-    st.stop()
+    raise Exception("모든 API 키와 모델 호출에 실패했습니다.")
 
-# --- 5. 커스텀 CSS ---
-st.markdown("""
-    <style>
-    .stCard { background-color: #ffffff; border-radius: 16px; padding: 25px; border: 1px solid #e2e8f0; margin-bottom: 20px; }
-    .result-title { 
-        color: #0056b3 !important; 
-        font-size: 1.5rem !important; 
-        font-weight: 900 !important; 
-        border-left: 6px solid #0056b3; 
-        padding-left: 12px; 
-        margin-top: 40px !important; 
-        margin-bottom: 15px !important;
-        background-color: #f8fbff;
-        padding-top: 8px;
-        padding-bottom: 8px;
-        border-radius: 0 5px 5px 0;
-    }
-    div.stButton > button {
-        background-color: #1d4ed8 !important; color: white !important;
-        font-size: 1.1rem !important; font-weight: 700 !important;
-        height: 3.5em !important; width: 100% !important;
-        border-radius: 12px !important; border: none !important;
-        box-shadow: 0 4px 10px rgba(29, 78, 216, 0.2) !important;
-    }
-    .q-item { background-color: #f8fafc; padding: 15px; border-radius: 10px; border-left: 5px solid #3b82f6; margin-top: 10px; font-weight: 600; }
-    .model-tag { font-size: 0.8rem; color: #64748b; margin-bottom: 10px; display: block; text-align: right; }
-    </style>
-    """, unsafe_allow_html=True)
+def clean_newlines(text):
+    if not text: return ""
+    return re.sub(r'\n{3,}', '\n\n', text).strip()
 
-def calculate_age(birth_year):
-    try: return datetime.date.today().year - int(birth_year) + 1
-    except: return "미상"
+# --- 6. UI 및 로직 ---
+st.markdown('<div class="main-header">', unsafe_allow_html=True)
+st.title("🩺 한방 임상 보조 시스템")
+st.write(f"현재 환자: **#{st.session_state.patient_count}**")
+st.markdown('</div>', unsafe_allow_html=True)
 
-# --- 6. UI 로직 ---
-
+# [Step 1] 최초 입력창
 if st.session_state.step == "input":
-    st.markdown('<div class="stCard">', unsafe_allow_html=True)
-    st.subheader("👤 환자 정보 및 증상 입력")
-    c1, c2, c3 = st.columns([2, 1, 1])
-    with c1: name = st.text_input("이름", placeholder="성함")
-    with c2: gender = st.selectbox("성별", ["남성", "여성", "미선택"])
-    with c3: birth_year = st.text_input("출생년도", placeholder="예: 1985")
-    raw_text = st.text_area("주소증 입력", height=150, placeholder="환자의 주요 증상을 최대한 자세히 입력해주세요.")
-    
-    if st.button("✨ 분석 시작 및 문진 생성"):
-        if raw_text:
-            st.session_state.patient_info = {"name": name, "gender": gender, "birth_year": birth_year}
-            with st.spinner("증상을 분석하여 핵심 질문을 생성하고 있습니다..."):
-                PROMPT = f"""
-                환자: {name}, 증상: {raw_text}
-                [지침]: 한의학적 육기(六氣) 진단을 확정하기 위해 환자에게 물어봐야 할 가장 중요한 질문 5가지를 생성하세요.
-                각 질문은 반드시 물음표(?)로 끝나야 하며, 번호를 붙이지 말고 줄바꿈으로 구분하세요.
-                """
-                try:
-                    # 여기서 하이브리드 엔진 사용
-                    res = analyze_with_hybrid_fallback(PROMPT)
+    with st.container():
+        st.markdown('<div class="stCard">', unsafe_allow_html=True)
+        st.subheader("📝 대화 원문 입력")
+        raw_text = st.text_area(
+            "환자와의 대화나 증상을 입력하세요", 
+            key='raw_text_input', 
+            height=200,
+            label_visibility="collapsed"
+        )
+        if st.button("✨ 1차 분석 및 문진 확인"):
+            if raw_text:
+                with st.spinner("증상을 분석 중입니다..."):
+                    FIRST_PROMPT = f"""
+                    다음 대화 원문을 바탕으로 '문진 단계'를 수행하세요.
                     
-                    # 결과 파싱 (질문 추출)
-                    qs = [q.strip() for q in re.split(r'\n', res) if '?' in q and len(q) > 5]
+                    **지침**:
+                    1. [SOAP 요약]: 환자의 증상을 SOAP 형식으로 요약.
+                    2. [추가 확인 사항]: 육기 진단을 위해 꼭 필요한 질문 리스트만 작성(번호 매기기). 만약 정보가 충분하다면 '없음' 작성.
                     
-                    if not qs: # 질문 생성 실패 시 기본값
-                        qs = ["증상이 언제부터 시작되었나요?", "통증의 양상은 어떤가요?", "악화되거나 완화되는 요인이 있나요?"]
+                    [대화 원문]: {raw_text}
+                    """
+                    try:
+                        result = analyze_with_hybrid_fallback(FIRST_PROMPT)
                         
-                    st.session_state.follow_up_questions = qs[:5]
-                    st.session_state.raw_text = raw_text
-                    st.session_state.step = "verify"
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"오류 상세: {e}")
-                    st.error("API 연결에 실패했습니다. 키 설정을 확인해주세요.")
-    st.markdown('</div>', unsafe_allow_html=True)
+                        if "[추가 확인 사항]" in result:
+                            parts = result.split("[추가 확인 사항]")
+                            st.session_state.soap_result = clean_newlines(parts[0].replace("[SOAP 요약]", "").strip())
+                            questions_raw = parts[1].strip()
+                            q_list = re.split(r'\n?\d+\.\s*', questions_raw)
+                            # 필터링 로직 강화
+                            st.session_state.follow_up_questions = [
+                                q.strip() for q in q_list 
+                                if len(q.strip()) > 5 and "없음" not in q and "확인 사항" not in q
+                            ]
+                        else:
+                            st.session_state.soap_result = clean_newlines(result.replace("[SOAP 요약]", "").strip())
+                            st.session_state.follow_up_questions = []
+                        
+                        st.session_state.raw_text = raw_text
+                        st.session_state.step = "verify"
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"분석 중 오류 발생: {e}")
+            else:
+                st.warning("내용을 입력해주세요.")
+        st.markdown('</div>', unsafe_allow_html=True)
 
+# [Step 2] 추가 문진 확인
 elif st.session_state.step == "verify":
     st.markdown('<div class="stCard">', unsafe_allow_html=True)
-    st.markdown(f'<span class="model-tag">🤖 Analysis by {st.session_state.current_model}</span>', unsafe_allow_html=True)
-    st.subheader("🔍 정밀 문진")
-    st.info("AI가 환자의 증상을 바탕으로 생성한 추가 질문입니다.")
+    st.markdown(f'<div class="model-tag">🤖 분석 모델: {st.session_state.current_model}</div>', unsafe_allow_html=True)
+    st.subheader("📋 1차 SOAP 요약")
+    st.markdown(f'<div class="soap-box">{st.session_state.soap_result}</div>', unsafe_allow_html=True)
     
-    for i, q in enumerate(st.session_state.follow_up_questions):
-        st.markdown(f'<div class="q-item">{i+1}. {q}</div>', unsafe_allow_html=True)
-        st.session_state.responses[f"q_{i}"] = st.text_input(f"답변 {i+1}", key=f"ans_{i}")
+    if st.session_state.follow_up_questions:
+        st.subheader("🔍 추가 확인 사항")
+        for i, question in enumerate(st.session_state.follow_up_questions):
+            st.markdown(f'<div class="q-item">{i+1}. {question}</div>', unsafe_allow_html=True)
+            st.session_state.additional_responses[f"q_{i}"] = st.text_input(
+                f"질문 {i+1} 답변", 
+                key=f"input_{i}", 
+                label_visibility="collapsed",
+                placeholder="답변을 입력하세요..."
+            )
+    else:
+        st.info("추가로 확인할 사항이 없습니다. 바로 처방을 생성합니다.")
     
-    if st.button("✅ 심층 진단 및 처방 생성"):
+    st.markdown('<div class="verify-btn" style="margin-top:20px;">', unsafe_allow_html=True)
+    if st.button("✅ 최종 확인 및 처방 생성"):
+        combined_answers = "\n".join([f"Q: {q}\nA: {st.session_state.additional_responses.get(f'q_{i}', '특이사항 없음')}" 
+                                      for i, q in enumerate(st.session_state.follow_up_questions)])
+        st.session_state.additional_input = combined_answers if combined_answers else "특이사항 없음"
         st.session_state.step = "result"
         st.rerun()
     st.markdown('</div>', unsafe_allow_html=True)
 
+# [Step 3] 최종 결과 출력
 elif st.session_state.step == "result":
     if not st.session_state.final_plan:
-        with st.spinner("데이터베이스를 대조하여 최적의 치료 혈자리를 선정 중입니다..."):
-            p = st.session_state.patient_info
-            age = calculate_age(p['birth_year'])
-            ans_str = "\n".join([f"Q: {q}\nA: {st.session_state.responses.get(f'q_{i}', '내용 없음')}" for i, q in enumerate(st.session_state.follow_up_questions)])
-            
-            # DB 로드 (기본값 처리)
-            if treatment_db_content:
-                db_context = str(treatment_db_content)
-            else:
-                db_context = "치료 DB가 로드되지 않았습니다."
-
+        with st.spinner("최종 치료 계획을 수립 중..."):
             FINAL_PROMPT = f"""
-            [치료 DB]:
-            {db_context}
+            [치료 DB]: {treatment_db_content}
+            [환자 정보]: {st.session_state.raw_text}
+            [1차 SOAP]: {st.session_state.soap_result}
+            [추가 문진]: {st.session_state.additional_input}
             
-            환자정보: {p['name']}({p['gender']}, {age}세)
-            주소증: {st.session_state.raw_text}
-            추가문진결과: {ans_str}
+            위 정보를 바탕으로 한의사 원장님을 위한 최종 진단 리포트를 작성하세요.
+            **반드시 아래 목차와 형식을 엄격히 준수하세요**:
 
-            [작성 지침 - 엄격 준수]:
-            1. **[질환 분석]**: 양방/한방 질환명과 추론 근거.
-            2. **[SOAP 차트]**: S/O/A/P 형식 (허위 정보 금지).
-            3. **[원인 분석]**: 육기 이론에 근거한 원인.
-            4. **[처방]**: 
-               - DB에 있는 혈자리만 사용.
-               - 형식: '혈자리명(코드) / 취혈방향(동측/대측) : 이유'
-            5. **[생활 지도]**: 생활 습관 교정.
-            
+            ### 1. 추정 진단 (의심 질환)
+            * **양방 의심 질환**: (명확한 질환명 제시)
+            * **한방 변증(육기)**: (예: 궐음풍목 태과, 소양상화 불급 등)
+            * **상세 추론 근거**: 환자의 주소증과 문진 결과를 바탕으로 왜 이 질환으로 판단했는지 양방 병리와 육기 이론을 결합하여 자세히 서술하세요.
+
+            ### 2. 진료기록부 (SOAP)
+            * 차트에 바로 복사할 수 있도록 S/O/A/P 형식을 갖추어 작성하세요.
+            * **주의**: 환자가 언급하지 않은 맥진, 설진 등의 정보는 절대 포함하지 마세요. 오직 확인된 팩트만 기재하세요.
+
+            ### 3. 원인 분석
+            * '증상 분석'과 '추가 정보'를 통합하여, 이 질환이 발생하게 된 근본 원인과 현재 상태를 논리적으로 설명하세요.
+
+            ### 4. 최종 침구 처방
+            * 치료 DB에 기반하여 혈자리, 취혈 방향, 선혈 이유를 통합하여 서술하세요.
+            * **형식**: `● 혈자리명(코드) / 취혈방향 (동측 or 대측) : 선혈 이유 상세 서술`
+            * (예시: ● **내관(PC6)** / 동측 : 급성 근육통(궐음)의 락혈로서 기체와 압력을 해소하기 위함입니다.)
+
+            ### 5. 생활 지도
+            * 예후 대신, 환자가 일상에서 실천해야 할 구체적이고 보편적인 생활 습관 교정 및 주의사항을 제시하세요.
+
             ---
-            (시스템 처리용: 맨 마지막에 `[이미지: URL]` 태그가 포함된 리스트를 나열하세요)
+            (시스템 처리용: 맨 마지막 줄에 `이미지: 혈자리명(코드) [이미지: URL]` 리스트를 나열하세요.)
             """
-            
             try:
                 st.session_state.final_plan = analyze_with_hybrid_fallback(FINAL_PROMPT)
-                
-                # 구글 시트 저장
-                new_id = str(uuid.uuid4())[:8]
-                sheet = get_storage_sheet()
-                if sheet:
-                    # 이미지 태그 제거 후 저장
-                    clean_content = re.sub(r'\[이미지:.*?\]', '', st.session_state.final_plan)
-                    sheet.append_row([new_id, datetime.datetime.now().strftime("%Y-%m-%d %H:%M"), f"{p['name']}", "자동", clean_content])
-                    st.session_state.shared_link = f"{MY_APP_URL}?view={new_id}"
-            
             except Exception as e:
-                st.error(f"최종 분석 실패: {e}")
+                st.error(f"최종 분석 중 오류: {e}")
 
     st.markdown('<div class="stCard">', unsafe_allow_html=True)
-    if st.session_state.current_model:
-        st.markdown(f'<span class="model-tag">🤖 Final Report by {st.session_state.current_model}</span>', unsafe_allow_html=True)
+    st.markdown(f'<div class="model-tag">🤖 최종 분석 모델: {st.session_state.current_model}</div>', unsafe_allow_html=True)
+    st.subheader("💡 최종 진단 및 치료 계획")
     
-    st.subheader(f"📋 {st.session_state.patient_info['name']}님 최종진단")
+    # 텍스트 본문 출력 (이미지 링크 제거)
+    display_text = re.sub(r'이미지:.*\[이미지:.*\]', '', st.session_state.final_plan)
+    display_text = re.sub(r'\[이미지:.*\]', '', display_text) 
+    st.markdown(display_text)
     
-    # 결과 출력 (마크다운 + 이미지 렌더링)
-    if st.session_state.final_plan:
-        raw_plan = st.session_state.final_plan.replace("```html", "").replace("```", "")
-        # 본문에서 이미지 링크 텍스트 숨기기 (깔끔하게)
-        display_text = re.sub(r'\[이미지:.*?\]', '', raw_plan)
-        st.markdown(display_text)
-        
-        # 이미지 하단 배치
-        img_patterns = re.findall(r'(\S+)\s*\[이미지:\s*(https?:\/\/[^\s\]]+)\]', raw_plan)
-        if img_patterns:
-            st.divider()
-            st.markdown("##### 🖼️ 혈자리 가이드")
-            cols = st.columns(2)
-            for idx, (name, url) in enumerate(img_patterns):
-                with cols[idx % 2]:
-                    st.image(url.strip(), caption=name, use_container_width=True)
-
-    if st.session_state.shared_link:
+    # 혈자리 이미지 렌더링
+    img_patterns = re.findall(r'([^\s\[:]+(?:\([^\)]+\))?)\s*\[이미지:\s*(https?:\/\/[^\s\]]+)\]', st.session_state.final_plan)
+    if img_patterns:
         st.divider()
-        st.markdown("### 🔗 환자용 공유 링크")
-        st.code(st.session_state.shared_link, language=None)
-        
-        # 카카오톡 전송 버튼
-        kakao_js_key = st.secrets.get("JAVASCRIPT_KEY", "")
-        patient_name = st.session_state.patient_info['name']
-        
-        kakao_button_html = f"""
-        <script src="https://t1.kakaocdn.net/kakao_js_sdk/2.7.0/kakao.min.js"></script>
-        <script>
-            try {{
-                if (!Kakao.isInitialized()) {{
-                    Kakao.init('{kakao_js_key}');
-                }}
-            }} catch(e) {{ console.log(e); }}
-            
-            function sendToKakao() {{
-                Kakao.Share.sendDefault({{
-                    objectType: 'text',
-                    text: '[한방 임상 보조 시스템]\\n{patient_name}님 진료 결과입니다.',
-                    link: {{
-                        mobileWebUrl: '{st.session_state.shared_link}',
-                        webUrl: '{st.session_state.shared_link}',
-                    }},
-                }});
-            }}
-        </script>
-        <div style="display: flex; justify-content: center; margin-top: 10px;">
-            <button onclick="sendToKakao()" style="
-                background-color: #FEE500; color: #191919; border: none; border-radius: 12px;
-                padding: 15px 25px; font-size: 16px; font-weight: bold; cursor: pointer;
-                display: flex; align-items: center; gap: 8px; width: 100%; justify-content: center;
-                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-            ">
-                <img src="https://developers.kakao.com/assets/img/about/logos/kakaotalksharing/kakaotalk_sharing_btn_medium.png" width="24" height="24">
-                내 카톡에 전송 / 환자에게 공유
-            </button>
-        </div>
-        """
-        components.html(kakao_button_html, height=80)
+        st.markdown("##### 🖼️ 혈자리 위치 가이드")
+        seen_urls = set()
+        cols = st.columns(2)
+        for idx, (label, url) in enumerate(img_patterns):
+            clean_url = url.strip()
+            if clean_url not in seen_urls:
+                with cols[idx % 2]:
+                    st.image(clean_url, use_container_width=True)
+                    st.markdown(f'<div class="acu-caption">{label}</div>', unsafe_allow_html=True)
+                seen_urls.add(clean_url)
 
     st.divider()
-    if st.button("🔄 다음 환자 진료 시작 (초기화)"):
-        for key in list(st.session_state.keys()): del st.session_state[key]
-        st.rerun()
+    
+    col_save, col_next = st.columns(2)
+    with col_save:
+        if st.button("📲 모바일 시트 전송", type="primary"):
+            with st.spinner("시트 저장 중..."):
+                if save_to_google_sheets(st.session_state.final_plan):
+                    st.success("전송 완료!")
+    
+    with col_next:
+        if st.button("🔄 다음 환자 진료"):
+            clear_form()
+            st.rerun()
     st.markdown('</div>', unsafe_allow_html=True)
+
+with st.sidebar:
+    if st.button("🏠 홈으로 (초기화)"):
+        clear_form()
+        st.rerun()
+
+st.caption(f"© 2025 임상 보조 시스템 | {st.session_state.current_time}")
